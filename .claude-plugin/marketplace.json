@@ -1,22 +1,20 @@
 {
-  "name": "cortex-local",
-  "description": "Local marketplace for Cortex plugin",
+  "name": "cortex",
   "owner": {
     "name": "Tomas Krajcik",
     "email": "support@rootdeveloper.dev"
   },
+  "metadata": {
+    "description": "Persistent local memory for Claude Code. Cross-session recall with vector search, automatic archiving, zero cloud dependencies.",
+    "version": "2.0.0"
+  },
   "plugins": [
     {
       "name": "cortex",
+      "source": "./",
       "description": "Persistent local memory for Claude Code. Longer sessions, cross-session recall, zero cloud.",
-      "version": "2.0.0",
-      "author": {
-        "name": "Tomas Krajcik"
-      },
-      "source": {
-        "type": "github",
-        "repo": "hjertefolger/cortex"
-      }
+      "category": "memory",
+      "tags": ["memory", "context", "vector-search", "embeddings", "local-first", "cross-session"]
     }
   ]
 }
