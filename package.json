@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --external:@xenova/transformers --external:onnxruntime-node --external:sharp --banner:js=\"import { createRequire } from 'module'; import { fileURLToPath } from 'url'; import { dirname } from 'path'; const require = createRequire(import.meta.url); const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename);\" && cp node_modules/sql.js/dist/sql-wasm.wasm dist/",
+    "build": "npm run build:index && npm run build:mcp && cp node_modules/sql.js/dist/sql-wasm.wasm dist/",
+    "build:index": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --external:@xenova/transformers --external:onnxruntime-node --external:sharp --banner:js=\"import { createRequire } from 'module'; import { fileURLToPath } from 'url'; import { dirname } from 'path'; const require = createRequire(import.meta.url); const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename);\"",
+    "build:mcp": "esbuild src/mcp-server.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/mcp-server.js --external:@xenova/transformers --external:onnxruntime-node --external:sharp --banner:js=\"import { createRequire } from 'module'; import { fileURLToPath } from 'url'; import { dirname } from 'path'; const require = createRequire(import.meta.url); const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename);\"",
     "test": "node --test tests/*.test.js",
     "typecheck": "tsc --noEmit"
   },

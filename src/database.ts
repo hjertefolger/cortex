@@ -265,6 +265,66 @@ export function deleteMemory(db: SqlJsDatabase, id: number): boolean {
   return db.getRowsModified() > 0;
 }
 
+/**
+ * Update memory content by ID
+ */
+export function updateMemory(
+  db: SqlJsDatabase,
+  id: number,
+  newContent: string,
+  newEmbedding: Float32Array
+): boolean {
+  const newHash = hashContent(newContent);
+
+  db.run(
+    `UPDATE memories SET content = ?, content_hash = ?, embedding = ? WHERE id = ?`,
+    [newContent, newHash, embeddingToBuffer(newEmbedding), id]
+  );
+
+  return db.getRowsModified() > 0;
+}
+
+/**
+ * Get recent memories for a project, sorted by timestamp
+ */
+export function getRecentMemories(
+  db: SqlJsDatabase,
+  projectId: string | null,
+  limit: number = 10
+): Array<{ id: number; content: string; timestamp: Date; projectId: string | null }> {
+  let query = `SELECT id, content, project_id, timestamp FROM memories`;
+  const params: (string | number)[] = [];
+
+  if (projectId !== null) {
+    query += ` WHERE project_id = ?`;
+    params.push(projectId);
+  }
+
+  query += ` ORDER BY timestamp DESC LIMIT ?`;
+  params.push(limit);
+
+  const result = db.exec(query, params);
+
+  if (result.length === 0 || result[0].values.length === 0) {
+    return [];
+  }
+
+  return result[0].values.map((row: SqlValue[]) => ({
+    id: row[0] as number,
+    content: row[1] as string,
+    projectId: row[2] as string | null,
+    timestamp: new Date(row[3] as string),
+  }));
+}
+
+/**
+ * Delete all memories for a project
+ */
+export function deleteProjectMemories(db: SqlJsDatabase, projectId: string): number {
+  db.run(`DELETE FROM memories WHERE project_id = ?`, [projectId]);
+  return db.getRowsModified();
+}
+
 // ============================================================================
 // Search Operations
 // ============================================================================

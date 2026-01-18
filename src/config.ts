@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { Config, StatuslineConfig, ArchiveConfig, MonitorConfig } from './types.js';
+import type { Config, StatuslineConfig, ArchiveConfig, MonitorConfig, AutomationConfig, SetupConfig } from './types.js';
 
 // ============================================================================
 // Default Configuration
@@ -30,10 +30,25 @@ export const DEFAULT_MONITOR_CONFIG: MonitorConfig = {
   tokenThreshold: 70,
 };
 
+export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
+  autoSaveThreshold: 70,
+  autoClearThreshold: 80,
+  autoClearEnabled: false,
+  restorationTokenBudget: 1000,
+  restorationMessageCount: 5,
+};
+
+export const DEFAULT_SETUP_CONFIG: SetupConfig = {
+  completed: false,
+  completedAt: null,
+};
+
 export const DEFAULT_CONFIG: Config = {
   statusline: DEFAULT_STATUSLINE_CONFIG,
   archive: DEFAULT_ARCHIVE_CONFIG,
   monitor: DEFAULT_MONITOR_CONFIG,
+  automation: DEFAULT_AUTOMATION_CONFIG,
+  setup: DEFAULT_SETUP_CONFIG,
 };
 
 // ============================================================================
@@ -165,6 +180,13 @@ export const CONFIG_PRESETS: Record<ConfigPreset, Partial<Config>> = {
     monitor: {
       tokenThreshold: 70,
     },
+    automation: {
+      autoSaveThreshold: 70,
+      autoClearThreshold: 80,
+      autoClearEnabled: false,
+      restorationTokenBudget: 1000,
+      restorationMessageCount: 5,
+    },
   },
   essential: {
     statusline: {
@@ -181,6 +203,13 @@ export const CONFIG_PRESETS: Record<ConfigPreset, Partial<Config>> = {
     },
     monitor: {
       tokenThreshold: 80,
+    },
+    automation: {
+      autoSaveThreshold: 75,
+      autoClearThreshold: 85,
+      autoClearEnabled: false,
+      restorationTokenBudget: 800,
+      restorationMessageCount: 5,
     },
   },
   minimal: {
@@ -199,6 +228,13 @@ export const CONFIG_PRESETS: Record<ConfigPreset, Partial<Config>> = {
     monitor: {
       tokenThreshold: 90,
     },
+    automation: {
+      autoSaveThreshold: 85,
+      autoClearThreshold: 90,
+      autoClearEnabled: false,
+      restorationTokenBudget: 500,
+      restorationMessageCount: 3,
+    },
   },
 };
 
@@ -210,4 +246,34 @@ export function applyPreset(preset: ConfigPreset): Config {
   const config = deepMerge(DEFAULT_CONFIG, presetConfig);
   saveConfig(config);
   return config;
+}
+
+// ============================================================================
+// Setup and Analytics
+// ============================================================================
+
+/**
+ * Get the analytics file path
+ */
+export function getAnalyticsPath(): string {
+  return path.join(getDataDir(), 'analytics.json');
+}
+
+/**
+ * Mark setup as completed
+ */
+export function markSetupComplete(): Config {
+  const config = loadConfig();
+  config.setup.completed = true;
+  config.setup.completedAt = new Date().toISOString();
+  saveConfig(config);
+  return config;
+}
+
+/**
+ * Check if setup has been completed
+ */
+export function isSetupComplete(): boolean {
+  const config = loadConfig();
+  return config.setup.completed;
 }

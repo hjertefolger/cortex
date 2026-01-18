@@ -6,15 +6,24 @@ This file provides guidance to Claude Code when working with this repository.
 
 Cortex is a Claude Code plugin that provides persistent local memory with cross-session recall. It uses vector embeddings and hybrid search to store and retrieve meaningful context from past sessions.
 
+**Key Features:**
+- Automated context management with configurable thresholds
+- Smart compaction: save, clear, and restore continuity
+- MCP server exposing memory tools to Claude
+- Session analytics and insights
+- Colored statusline with progress bar
+
 ## Build Commands
 
 ```bash
 npm install            # Install dependencies
-npm run build          # Build TypeScript to dist/ using esbuild
+npm run build          # Build both index.js and mcp-server.js
+npm run build:index    # Build main entry point only
+npm run build:mcp      # Build MCP server only
 npm run typecheck      # Type check without emitting
 
 # Test with sample stdin data
-echo '{"cwd":"/home/user/project","model":{"display_name":"Opus"},"context_window":{"context_window_size":200000,"used_percentage":45}}' | node dist/index.js stats
+echo '{"cwd":"/home/user/project","context_window":{"used_percentage":45}}' | node dist/index.js stats
 ```
 
 ## Architecture
@@ -27,6 +36,8 @@ Claude Code → stdin JSON → parse → command router → handler → stdout
                                SQLite + Embeddings
                                         ↓
                               ~/.cortex/memory.db
+
+MCP Client → JSON-RPC → mcp-server.js → tools → database
 ```
 
 ### Core Components
@@ -34,13 +45,15 @@ Claude Code → stdin JSON → parse → command router → handler → stdout
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | Command router and handlers |
+| `src/mcp-server.ts` | MCP server exposing tools |
 | `src/stdin.ts` | Parse Claude Code's JSON input |
 | `src/types.ts` | TypeScript interfaces |
 | `src/database.ts` | SQLite schema, queries, FTS5 |
 | `src/embeddings.ts` | BGE model loading, vector generation |
 | `src/search.ts` | Hybrid search (vector + keyword + RRF) |
-| `src/archive.ts` | Transcript parsing, content extraction |
+| `src/archive.ts` | Transcript parsing, content extraction, restoration context |
 | `src/config.ts` | Configuration management |
+| `src/analytics.ts` | Session tracking and insights |
 
 ### Database Schema
 
@@ -80,11 +93,6 @@ The plugin receives JSON via stdin from Claude Code:
   },
   "context_window": {
     "context_window_size": 200000,
-    "current_usage": {
-      "input_tokens": 45000,
-      "cache_creation_input_tokens": 5000,
-      "cache_read_input_tokens": 10000
-    },
     "used_percentage": 45
   }
 }
@@ -96,28 +104,51 @@ The plugin receives JSON via stdin from Claude Code:
 cortex/
 ├── .claude-plugin/
 │   └── plugin.json      # Plugin metadata
+├── .mcp.json            # MCP server configuration
 ├── commands/
-│   ├── setup.md         # /cortex-setup
-│   ├── save.md          # /save
-│   ├── recall.md        # /recall
-│   ├── stats.md         # /cortex-stats
-│   └── configure.md     # /cortex-configure
+│   ├── setup.md         # /cortex-setup (legacy)
+│   ├── save.md          # /save (legacy)
+│   ├── recall.md        # /recall (legacy)
+│   ├── stats.md         # /cortex-stats (legacy)
+│   └── configure.md     # /cortex-configure (legacy)
+├── skills/
+│   ├── setup/SKILL.md   # Setup wizard
+│   ├── configure/SKILL.md # Configuration
+│   ├── stats/SKILL.md   # Statistics display
+│   ├── recall/SKILL.md  # Memory search (model-invoked)
+│   ├── save/SKILL.md    # Save context (model-invoked)
+│   └── manage/SKILL.md  # Memory management
 ├── hooks/
 │   └── hooks.json       # SessionStart, PostToolUse, PreCompact
 ├── src/                 # TypeScript source
 ├── dist/
 │   ├── index.js         # Compiled entry point
+│   ├── mcp-server.js    # MCP server
 │   └── sql-wasm.wasm    # SQLite WebAssembly
 └── package.json
 ```
 
+## MCP Tools
+
+The MCP server exposes these tools:
+
+| Tool | Purpose | Permission |
+|------|---------|------------|
+| `cortex_recall` | Search memory | Read-only |
+| `cortex_save` | Archive session | Safe |
+| `cortex_stats` | Get statistics | Read-only |
+| `cortex_restore` | Get restoration context | Read-only |
+| `cortex_delete` | Delete memory fragment | **Requires confirmation** |
+| `cortex_forget_project` | Delete project memories | **Requires confirmation** |
+| `cortex_analytics` | Get usage analytics | Read-only |
+
 ## Hooks
 
-| Hook | Trigger | Purpose |
-|------|---------|---------|
-| `SessionStart` | New session begins | Show memory count for project |
-| `PostToolUse` | After any tool | Monitor context usage |
-| `PreCompact` | Before compaction | Auto-archive session |
+| Hook | Trigger | Handler | Purpose |
+|------|---------|---------|---------|
+| `SessionStart` | New session | `session-start` | Show memory count, start analytics |
+| `PostToolUse` | After any tool | `context-check` | Monitor context, auto-save/clear |
+| `PreCompact` | Before compaction | `smart-compact` | Save + restoration context |
 
 ## Configuration
 
@@ -129,7 +160,7 @@ Config file: `~/.cortex/config.json`
     "enabled": true,
     "showFragments": true,
     "showLastArchive": true,
-    "showContext": false,
+    "showContext": true,
     "contextWarningThreshold": 70
   },
   "archive": {
@@ -139,9 +170,35 @@ Config file: `~/.cortex/config.json`
   },
   "monitor": {
     "tokenThreshold": 70
+  },
+  "automation": {
+    "autoSaveThreshold": 70,
+    "autoClearThreshold": 80,
+    "autoClearEnabled": false,
+    "restorationTokenBudget": 1000,
+    "restorationMessageCount": 5
+  },
+  "setup": {
+    "completed": true,
+    "completedAt": "2024-01-15T10:30:00Z"
   }
 }
 ```
+
+### Automation Settings
+
+- `autoSaveThreshold`: Context % to trigger auto-save (default: 70)
+- `autoClearThreshold`: Context % to trigger auto-clear (default: 80)
+- `autoClearEnabled`: Enable automatic context clear (default: false)
+- `restorationTokenBudget`: Max tokens for restoration context (default: 1000)
+- `restorationMessageCount`: Messages to restore after clear (default: 5)
+
+## Analytics
+
+Analytics are stored at `~/.cortex/analytics.json` and track:
+- Session metrics (peak context, save points, recalls)
+- Usage patterns
+- Recommendations for optimization
 
 ## Dependencies
 
@@ -155,3 +212,4 @@ Config file: `~/.cortex/config.json`
 - sql-wasm.wasm must be copied to dist/ during build
 - Embedding model is downloaded on first use (~33MB)
 - Database is persisted at ~/.cortex/memory.db
+- Analytics are stored at ~/.cortex/analytics.json

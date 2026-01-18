@@ -386,3 +386,139 @@ export function formatArchiveResult(result: ArchiveResult): string {
 
   return lines.join('\n');
 }
+
+// ============================================================================
+// Restoration Context
+// ============================================================================
+
+export interface RestorationContext {
+  hasContent: boolean;
+  summary: string;
+  fragments: Array<{
+    content: string;
+    timestamp: Date;
+  }>;
+  estimatedTokens: number;
+}
+
+/**
+ * Build restoration context from recent memories
+ * Used after context clear to restore continuity
+ */
+export async function buildRestorationContext(
+  db: SqlJsDatabase,
+  projectId: string | null,
+  options: {
+    messageCount?: number;
+    tokenBudget?: number;
+  } = {}
+): Promise<RestorationContext> {
+  const { messageCount = 5, tokenBudget = 1000 } = options;
+
+  // Import search functions dynamically to avoid circular dependency
+  const { searchByVector } = await import('./database.js');
+  const { embedQuery } = await import('./embeddings.js');
+
+  // Query for recent context
+  const queryEmbedding = await embedQuery('recent work summary context decisions');
+
+  // Get recent memories sorted by relevance
+  const results = searchByVector(db, queryEmbedding, projectId, messageCount * 2);
+
+  if (results.length === 0) {
+    return {
+      hasContent: false,
+      summary: 'No recent context available.',
+      fragments: [],
+      estimatedTokens: 0,
+    };
+  }
+
+  // Select fragments within token budget
+  const fragments: Array<{ content: string; timestamp: Date }> = [];
+  let totalTokens = 0;
+  const tokensPerChar = 0.25; // Rough estimate
+
+  for (const result of results) {
+    const contentTokens = Math.ceil(result.content.length * tokensPerChar);
+
+    if (totalTokens + contentTokens > tokenBudget) {
+      // Truncate content to fit within budget
+      const remainingTokens = tokenBudget - totalTokens;
+      if (remainingTokens > 50) {
+        const truncatedLength = Math.floor(remainingTokens / tokensPerChar);
+        fragments.push({
+          content: result.content.substring(0, truncatedLength) + '...',
+          timestamp: result.timestamp,
+        });
+      }
+      break;
+    }
+
+    fragments.push({
+      content: result.content,
+      timestamp: result.timestamp,
+    });
+    totalTokens += contentTokens;
+
+    if (fragments.length >= messageCount) {
+      break;
+    }
+  }
+
+  // Build summary
+  const summary = fragments.length > 0
+    ? `Restored ${fragments.length} context fragments from ${projectId || 'global'} memory.`
+    : 'No relevant context found.';
+
+  return {
+    hasContent: fragments.length > 0,
+    summary,
+    fragments,
+    estimatedTokens: totalTokens,
+  };
+}
+
+/**
+ * Format restoration context for display
+ */
+export function formatRestorationContext(context: RestorationContext): string {
+  if (!context.hasContent) {
+    return context.summary;
+  }
+
+  const lines: string[] = [];
+  lines.push(context.summary);
+  lines.push('');
+
+  for (let i = 0; i < context.fragments.length; i++) {
+    const fragment = context.fragments[i];
+    const timeAgo = formatTimeAgo(fragment.timestamp);
+    lines.push(`[${i + 1}] (${timeAgo})`);
+    lines.push(fragment.content);
+    lines.push('');
+  }
+
+  lines.push(`~${context.estimatedTokens} tokens`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Format time ago string
+ */
+function formatTimeAgo(date: Date): string {
+  const now = Date.now();
+  const diff = now - date.getTime();
+
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+
+  return date.toLocaleDateString();
+}

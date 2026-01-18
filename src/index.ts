@@ -4,12 +4,28 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, type ConfigPreset } from './config.js';
-import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb } from './database.js';
-import { verifyModel, getModelName } from './embeddings.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, type ConfigPreset } from './config.js';
+import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector } from './database.js';
+import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
-import { archiveSession, formatArchiveResult } from './archive.js';
+import { archiveSession, formatArchiveResult, buildRestorationContext, formatRestorationContext } from './archive.js';
+import { startSession, updateContextPercent, recordSavePoint, recordClear, getCurrentSession } from './analytics.js';
 import type { StdinData, CommandName } from './types.js';
+
+// ============================================================================
+// ANSI Colors for Terminal Output
+// ============================================================================
+
+const ANSI = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  cyan: '\x1b[36m',
+  gray: '\x1b[90m',
+};
 
 // ============================================================================
 // Command Router
@@ -33,8 +49,16 @@ async function main() {
         await handleMonitor();
         break;
 
+      case 'context-check':
+        await handleContextCheck();
+        break;
+
       case 'pre-compact':
         await handlePreCompact();
+        break;
+
+      case 'smart-compact':
+        await handleSmartCompact();
         break;
 
       case 'save':
@@ -92,7 +116,7 @@ async function handleStatusline() {
   const db = await initDb();
   const stats = getStats(db);
 
-  const parts: string[] = ['[Cortex]'];
+  const parts: string[] = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
 
   // Fragment count
   if (config.statusline.showFragments) {
@@ -104,23 +128,46 @@ async function handleStatusline() {
     const projectId = getProjectId(stdin.cwd);
     const projectStats = getProjectStats(db, projectId);
 
-    parts.push(projectId);
+    parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
 
     // Last archive time
     if (config.statusline.showLastArchive && projectStats.lastArchive) {
-      parts.push(`Last: ${formatDuration(projectStats.lastArchive)}`);
+      parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
     }
 
-    // Context usage warning
+    // Context usage with colored progress bar
     if (config.statusline.showContext) {
       const contextPercent = getContextPercent(stdin);
-      if (contextPercent >= config.statusline.contextWarningThreshold) {
-        parts.push(`⚠ ${contextPercent}%`);
-      }
+      const progressBar = createProgressBar(contextPercent);
+      parts.push(progressBar);
     }
   }
 
   console.log(parts.join(' | '));
+}
+
+/**
+ * Create a colored progress bar for context usage
+ */
+function createProgressBar(percent: number): string {
+  const width = 10;
+  const filled = Math.round((percent / 100) * width);
+  const empty = width - filled;
+
+  // Color based on percentage
+  let color: string;
+  if (percent < 70) {
+    color = ANSI.green;
+  } else if (percent < 85) {
+    color = ANSI.yellow;
+  } else {
+    color = ANSI.red;
+  }
+
+  const filledBar = '\u2588'.repeat(filled); // Full block
+  const emptyBar = '\u2591'.repeat(empty);   // Light shade
+
+  return `${color}${filledBar}${ANSI.dim}${emptyBar}${ANSI.reset} ${percent}%`;
 }
 
 // ============================================================================
@@ -129,22 +176,66 @@ async function handleStatusline() {
 
 async function handleSessionStart() {
   const stdin = await readStdin();
+  const config = loadConfig();
+
+  // Check if setup is completed
+  if (!config.setup.completed) {
+    console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} First run detected. Run ${ANSI.cyan}/cortex:setup${ANSI.reset} to initialize.`);
+    return;
+  }
 
   // Initialize database
-  await initDb();
+  const db = await initDb();
 
-  if (stdin?.cwd) {
-    const projectId = getProjectId(stdin.cwd);
-    const db = await initDb();
-    const projectStats = getProjectStats(db, projectId);
+  const projectId = stdin?.cwd ? getProjectId(stdin.cwd) : null;
 
-    if (projectStats.fragmentCount > 0) {
-      console.log(`[Cortex] Loaded ${projectStats.fragmentCount} memories for ${projectId}`);
-    } else {
-      console.log(`[Cortex] Ready for ${projectId} (no memories yet)`);
+  // Start analytics session
+  startSession(projectId);
+
+  // Get project stats
+  const projectStats = projectId ? getProjectStats(db, projectId) : null;
+
+  if (projectStats && projectStats.fragmentCount > 0) {
+    // Get recent context summary
+    const recentContext = await getRecentContextSummary(db, projectId);
+
+    console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} ${projectStats.fragmentCount} memories for ${ANSI.bold}${projectId}${ANSI.reset}`);
+
+    if (recentContext) {
+      console.log(`${ANSI.dim}  Last session: ${recentContext}${ANSI.reset}`);
     }
+  } else if (projectId) {
+    console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Ready for ${ANSI.bold}${projectId}${ANSI.reset} (no memories yet)`);
   } else {
-    console.log('[Cortex] Session started');
+    console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Session started`);
+  }
+}
+
+/**
+ * Get a brief summary of recent context for a project
+ */
+async function getRecentContextSummary(db: Awaited<ReturnType<typeof initDb>>, projectId: string | null): Promise<string | null> {
+  try {
+    // Get most recent memory for the project
+    const queryEmbedding = await embedQuery('recent work context');
+    const results = searchByVector(db, queryEmbedding, projectId, 1);
+
+    if (results.length === 0) {
+      return null;
+    }
+
+    const recent = results[0];
+    const timeAgo = formatDuration(recent.timestamp);
+
+    // Truncate content for summary
+    const maxLen = 60;
+    const content = recent.content.length > maxLen
+      ? recent.content.substring(0, maxLen).trim() + '...'
+      : recent.content;
+
+    return `${timeAgo} - "${content}"`;
+  } catch {
+    return null;
   }
 }
 
@@ -156,9 +247,105 @@ async function handleMonitor() {
 
   // Check if context usage is above threshold
   const contextPercent = getContextPercent(stdin);
+
+  // Track context usage in analytics
+  updateContextPercent(contextPercent);
+
   if (contextPercent >= config.monitor.tokenThreshold) {
-    console.log(`[Cortex] Context at ${contextPercent}% - consider archiving with /save`);
+    console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% - consider archiving with /cortex:save`);
   }
+}
+
+/**
+ * Context check handler - called by PostToolUse hook
+ * Triggers auto-save/auto-clear based on configured thresholds
+ */
+async function handleContextCheck() {
+  const stdin = await readStdin();
+  const config = loadConfig();
+
+  if (!stdin) return;
+
+  const contextPercent = getContextPercent(stdin);
+
+  // Track in analytics
+  updateContextPercent(contextPercent);
+
+  // Check for auto-clear threshold (higher priority)
+  if (contextPercent >= config.automation.autoClearThreshold && config.automation.autoClearEnabled) {
+    console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}%. Triggering smart compaction...`);
+    await handleSmartCompact();
+    return;
+  }
+
+  // Check for auto-save threshold
+  if (contextPercent >= config.automation.autoSaveThreshold) {
+    const db = await initDb();
+    const projectId = stdin.cwd ? getProjectId(stdin.cwd) : null;
+
+    if (stdin.transcript_path) {
+      console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Context at ${contextPercent}%. Auto-saving...`);
+
+      const result = await archiveSession(db, stdin.transcript_path, projectId);
+
+      if (result.archived > 0) {
+        recordSavePoint(contextPercent, result.archived);
+        console.log(`${ANSI.green}[Cortex]${ANSI.reset} Auto-saved ${result.archived} fragments`);
+      }
+    }
+  }
+  // Otherwise: silent (no output to avoid noise)
+}
+
+/**
+ * Smart compaction handler
+ * Saves context, clears, and provides restoration context
+ */
+async function handleSmartCompact() {
+  const stdin = await readStdin();
+  const config = loadConfig();
+
+  if (!stdin?.transcript_path) {
+    console.log(`${ANSI.red}[Cortex]${ANSI.reset} No transcript available for compaction`);
+    return;
+  }
+
+  const db = await initDb();
+  const projectId = stdin.cwd ? getProjectId(stdin.cwd) : null;
+  const contextPercent = getContextPercent(stdin);
+
+  // 1. Save current session
+  console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Smart compaction starting...`);
+
+  const result = await archiveSession(db, stdin.transcript_path, projectId, {
+    onProgress: (current, total) => {
+      process.stdout.write(`\r${ANSI.dim}[Cortex] Archiving ${current}/${total}...${ANSI.reset}`);
+    },
+  });
+
+  console.log(''); // Clear progress line
+
+  if (result.archived > 0) {
+    recordSavePoint(contextPercent, result.archived);
+    console.log(`${ANSI.green}[Cortex]${ANSI.reset} Archived ${result.archived} fragments`);
+  }
+
+  // 2. Build restoration context
+  const restoration = await buildRestorationContext(db, projectId, {
+    messageCount: config.automation.restorationMessageCount,
+    tokenBudget: config.automation.restorationTokenBudget,
+  });
+
+  // 3. Record the clear
+  recordClear();
+
+  // 4. Output restoration context for Claude to see after clear
+  console.log('');
+  console.log(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
+  console.log(formatRestorationContext(restoration));
+  console.log(`${ANSI.cyan}===========================${ANSI.reset}`);
+  console.log('');
+  console.log(`${ANSI.dim}Context saved and ready for clear. Use /clear to proceed.${ANSI.reset}`);
 }
 
 async function handlePreCompact() {
@@ -421,7 +608,9 @@ export {
   handleStatusline,
   handleSessionStart,
   handleMonitor,
+  handleContextCheck,
   handlePreCompact,
+  handleSmartCompact,
   handleSave,
   handleRecall,
   handleStats,

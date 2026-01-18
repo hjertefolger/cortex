@@ -98,10 +98,25 @@ export interface MonitorConfig {
   tokenThreshold: number;
 }
 
+export interface AutomationConfig {
+  autoSaveThreshold: number;      // Context % to trigger auto-save (default 70)
+  autoClearThreshold: number;     // Context % to trigger auto-clear (default 80)
+  autoClearEnabled: boolean;      // Whether to auto-clear after save (default false)
+  restorationTokenBudget: number; // Max tokens for restoration context (default 1000)
+  restorationMessageCount: number; // Number of recent messages to restore (default 5)
+}
+
+export interface SetupConfig {
+  completed: boolean;
+  completedAt: string | null;
+}
+
 export interface Config {
   statusline: StatuslineConfig;
   archive: ArchiveConfig;
   monitor: MonitorConfig;
+  automation: AutomationConfig;
+  setup: SetupConfig;
 }
 
 // ============================================================================
@@ -132,7 +147,9 @@ export type CommandName =
   | 'statusline'
   | 'session-start'
   | 'monitor'
+  | 'context-check'
   | 'pre-compact'
+  | 'smart-compact'
   | 'save'
   | 'archive'
   | 'recall'
@@ -141,6 +158,47 @@ export type CommandName =
   | 'configure'
   | 'setup'
   | 'test-embed';
+
+// ============================================================================
+// Analytics Types
+// ============================================================================
+
+export interface SessionSavePoint {
+  timestamp: string;
+  contextPercent: number;
+  fragmentsSaved: number;
+}
+
+export interface SessionMetrics {
+  sessionId: string;
+  projectId: string | null;
+  startTime: string;
+  endTime: string | null;
+  peakContextPercent: number;
+  savePoints: SessionSavePoint[];
+  clearCount: number;
+  recallCount: number;
+  fragmentsCreated: number;
+  restorationUsed: boolean;
+}
+
+export interface AnalyticsSummary {
+  totalSessions: number;
+  totalFragments: number;
+  averageContextAtSave: number;
+  sessionsProlonged: number;
+  thisWeek: {
+    sessions: number;
+    fragmentsCreated: number;
+    recallsUsed: number;
+  };
+}
+
+export interface AnalyticsData {
+  version: number;
+  sessions: SessionMetrics[];
+  currentSession: SessionMetrics | null;
+}
 
 export interface CommandContext {
   stdin: StdinData | null;

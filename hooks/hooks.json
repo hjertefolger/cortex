@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js session-start",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
@@ -18,8 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js monitor",
-            "timeout": 3
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js context-check",
+            "timeout": 5
           }
         ]
       }
@@ -29,8 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js pre-compact",
-            "timeout": 30
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js smart-compact",
+            "timeout": 60
           }
         ]
       }
