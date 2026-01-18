@@ -4,7 +4,7 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, type ConfigPreset } from './config.js';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
@@ -188,6 +188,11 @@ async function handleSessionStart() {
   const db = await initDb();
 
   const projectId = stdin?.cwd ? getProjectId(stdin.cwd) : null;
+
+  // Save current session info for MCP tools to use
+  if (stdin?.transcript_path) {
+    saveCurrentSession(stdin.transcript_path, projectId);
+  }
 
   // Start analytics session
   startSession(projectId);
@@ -520,11 +525,13 @@ async function handleSetup() {
   console.log('  ✓ Database initialized');
 
   // Check and install dependencies if needed
-  const { existsSync } = await import('fs');
+  const fs = await import('fs');
+  const path = await import('path');
+  const os = await import('os');
   const pluginDir = new URL('.', import.meta.url).pathname.replace('/dist/', '');
   const nodeModulesPath = `${pluginDir}/node_modules`;
 
-  if (!existsSync(nodeModulesPath)) {
+  if (!fs.existsSync(nodeModulesPath)) {
     console.log('  ⏳ Installing dependencies (first run only)...');
 
     const { execSync } = await import('child_process');
@@ -555,13 +562,54 @@ async function handleSetup() {
     return;
   }
 
+  // Configure statusline in ~/.claude/settings.json
+  console.log('  ⏳ Configuring statusline...');
+  const claudeDir = path.join(os.homedir(), '.claude');
+  const claudeSettingsPath = path.join(claudeDir, 'settings.json');
+
+  // Ensure .claude directory exists
+  if (!fs.existsSync(claudeDir)) {
+    fs.mkdirSync(claudeDir, { recursive: true });
+  }
+
+  // Load existing settings or create new
+  let claudeSettings: Record<string, unknown> = {};
+  if (fs.existsSync(claudeSettingsPath)) {
+    try {
+      claudeSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
+    } catch {
+      // If parsing fails, start fresh
+      claudeSettings = {};
+    }
+  }
+
+  // Get plugin path - use CLAUDE_PLUGIN_ROOT env var or derive from current location
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
+
+  // Set statusline command
+  claudeSettings.statusLine = {
+    type: 'command',
+    command: `node ${pluginRoot}/dist/index.js statusline`
+  };
+
+  // Write settings
+  fs.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2), 'utf8');
+  console.log('  ✓ Statusline configured');
+
+  // Mark setup as complete
+  markSetupComplete();
+  console.log('  ✓ Setup marked complete');
+
   console.log('');
   console.log('[Cortex] Setup complete!');
   console.log('');
-  console.log('Next steps:');
-  console.log('  1. Install the plugin in Claude Code settings');
-  console.log('  2. Use /save to archive session context');
-  console.log('  3. Use /recall <query> to search memories');
+  console.log(`${ANSI.yellow}Important: Restart Claude Code to activate the statusline${ANSI.reset}`);
+  console.log('');
+  console.log('Commands available:');
+  console.log('  /cortex:save     - Archive session context');
+  console.log('  /cortex:recall   - Search memories');
+  console.log('  /cortex:stats    - View memory statistics');
+  console.log('  /cortex:configure - Adjust settings');
 }
 
 async function handleConfigure(args: string[]) {

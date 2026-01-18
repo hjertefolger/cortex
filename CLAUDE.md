@@ -12,6 +12,7 @@ Cortex is a Claude Code plugin that provides persistent local memory with cross-
 - MCP server exposing memory tools to Claude
 - Session analytics and insights
 - Colored statusline with progress bar
+- Granular memory saving with `cortex_remember`
 
 ## Build Commands
 
@@ -105,19 +106,13 @@ cortex/
 ├── .claude-plugin/
 │   └── plugin.json      # Plugin metadata
 ├── .mcp.json            # MCP server configuration
-├── commands/
-│   ├── setup.md         # /cortex-setup (legacy)
-│   ├── save.md          # /save (legacy)
-│   ├── recall.md        # /recall (legacy)
-│   ├── stats.md         # /cortex-stats (legacy)
-│   └── configure.md     # /cortex-configure (legacy)
 ├── skills/
-│   ├── setup/SKILL.md   # Setup wizard
-│   ├── configure/SKILL.md # Configuration
-│   ├── stats/SKILL.md   # Statistics display
-│   ├── recall/SKILL.md  # Memory search (model-invoked)
-│   ├── save/SKILL.md    # Save context (model-invoked)
-│   └── manage/SKILL.md  # Memory management
+│   ├── setup/SKILL.md   # Setup wizard (/cortex:setup)
+│   ├── configure/SKILL.md # Configuration (/cortex:configure)
+│   ├── stats/SKILL.md   # Statistics display (/cortex:stats)
+│   ├── recall/SKILL.md  # Memory search (/cortex:recall)
+│   ├── save/SKILL.md    # Save context (/cortex:save)
+│   └── manage/SKILL.md  # Memory management (/cortex:manage)
 ├── hooks/
 │   └── hooks.json       # SessionStart, PostToolUse, PreCompact
 ├── src/                 # TypeScript source
@@ -135,12 +130,30 @@ The MCP server exposes these tools:
 | Tool | Purpose | Permission |
 |------|---------|------------|
 | `cortex_recall` | Search memory | Read-only |
-| `cortex_save` | Archive session | Safe |
+| `cortex_remember` | Save specific insight/decision | Safe |
+| `cortex_save` | Archive session (alias: cortex_archive) | Safe |
+| `cortex_archive` | Archive session (canonical name) | Safe |
 | `cortex_stats` | Get statistics | Read-only |
 | `cortex_restore` | Get restoration context | Read-only |
 | `cortex_delete` | Delete memory fragment | **Requires confirmation** |
 | `cortex_forget_project` | Delete project memories | **Requires confirmation** |
 | `cortex_analytics` | Get usage analytics | Read-only |
+
+### Key Tool Distinction
+
+- **`cortex_remember`**: Save a specific fact/decision during conversation. Does NOT require transcript path. Use for granular saving.
+- **`cortex_save`/`cortex_archive`**: Archive entire session. Requires transcript path. Use for bulk session backup.
+
+## Skills (User-Invocable Commands)
+
+| Skill | Command | Purpose |
+|-------|---------|---------|
+| setup | `/cortex:setup` | First-time initialization |
+| configure | `/cortex:configure` | Adjust settings |
+| stats | `/cortex:stats` | View memory statistics |
+| save | `/cortex:save` | Archive session context |
+| recall | `/cortex:recall` | Search memories |
+| manage | `/cortex:manage` | Delete/manage memories |
 
 ## Hooks
 
@@ -193,6 +206,20 @@ Config file: `~/.cortex/config.json`
 - `restorationTokenBudget`: Max tokens for restoration context (default: 1000)
 - `restorationMessageCount`: Messages to restore after clear (default: 5)
 
+## Setup Flow
+
+On first run:
+1. Run `/cortex:setup` to initialize
+2. Setup wizard creates `~/.cortex` directory
+3. Initializes database and downloads embedding model
+4. Configures statusline in `~/.claude/settings.json`
+5. Marks setup as complete
+
+After setup:
+- Statusline appears in Claude Code (requires restart)
+- Use `/cortex:configure` to adjust settings
+- Memory tools are available via MCP
+
 ## Analytics
 
 Analytics are stored at `~/.cortex/analytics.json` and track:
@@ -213,3 +240,4 @@ Analytics are stored at `~/.cortex/analytics.json` and track:
 - Embedding model is downloaded on first use (~33MB)
 - Database is persisted at ~/.cortex/memory.db
 - Analytics are stored at ~/.cortex/analytics.json
+- Tool Search is handled automatically by Claude Code (activates at 10% context usage)

@@ -2409,6 +2409,28 @@ function loadConfig() {
 function getAnalyticsPath() {
   return path.join(getDataDir(), "analytics.json");
 }
+function getSessionsPath() {
+  return path.join(getDataDir(), "sessions.json");
+}
+function loadSessions() {
+  const sessionsPath = getSessionsPath();
+  if (!fs.existsSync(sessionsPath)) {
+    return {};
+  }
+  try {
+    const content = fs.readFileSync(sessionsPath, "utf8");
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+function getCurrentSession(projectId) {
+  if (!projectId) {
+    return null;
+  }
+  const sessions = loadSessions();
+  return sessions[projectId] || null;
+}
 var DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_MONITOR_CONFIG, DEFAULT_AUTOMATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG;
 var init_config = __esm({
   "src/config.ts"() {
@@ -2602,6 +2624,19 @@ function contentExists(db, content) {
 function deleteMemory(db, id) {
   db.run(`DELETE FROM memories WHERE id = ?`, [id]);
   return db.getRowsModified() > 0;
+}
+function storeManualMemory(db, content, embedding, projectId, context) {
+  const fullContent = context ? `${content}
+
+[Context: ${context}]` : content;
+  const sessionId = `manual-${Date.now()}`;
+  return insertMemory(db, {
+    content: fullContent,
+    embedding,
+    projectId,
+    sourceSession: sessionId,
+    timestamp: /* @__PURE__ */ new Date()
+  });
 }
 function searchByVector(db, queryEmbedding, projectId, limit = 10) {
   let query = `SELECT id, content, embedding, project_id, timestamp FROM memories`;
@@ -3153,8 +3188,6 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
     const embedding = embeddings[i];
     const { isDuplicate } = insertMemory(db, {
       content,
-      contentHash: "",
-      // Will be computed by insertMemory
       embedding,
       projectId,
       sourceSession: sessionId,
@@ -3258,14 +3291,36 @@ var TOOLS = [
     }
   },
   {
+    name: "cortex_remember",
+    description: "Save a specific insight, decision, or fact to memory. Use for important information worth preserving during the conversation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "The content to remember (decision, insight, fact, etc.)"
+        },
+        context: {
+          type: "string",
+          description: "Optional context about why this is important"
+        },
+        projectId: {
+          type: "string",
+          description: "Project ID to associate with this memory"
+        }
+      },
+      required: ["content"]
+    }
+  },
+  {
     name: "cortex_save",
-    description: "Archive the current session to Cortex memory. Use before clearing context or when context is high.",
+    description: "Archive the current session to Cortex memory. Use before clearing context or when context is high. Transcript path is auto-detected from current session.",
     inputSchema: {
       type: "object",
       properties: {
         transcriptPath: {
           type: "string",
-          description: "Path to the transcript file to archive"
+          description: "Path to the transcript file (optional - auto-detected from current session)"
         },
         projectId: {
           type: "string",
@@ -3275,8 +3330,28 @@ var TOOLS = [
           type: "boolean",
           description: "Save as global memories (not project-specific)"
         }
-      },
-      required: ["transcriptPath"]
+      }
+    }
+  },
+  {
+    name: "cortex_archive",
+    description: "Archive the current session to Cortex memory (alias for cortex_save). Transcript path is auto-detected from current session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        transcriptPath: {
+          type: "string",
+          description: "Path to the transcript file (optional - auto-detected from current session)"
+        },
+        projectId: {
+          type: "string",
+          description: "Project ID to associate with the memories"
+        },
+        global: {
+          type: "boolean",
+          description: "Save as global memories (not project-specific)"
+        }
+      }
     }
   },
   {
@@ -3380,8 +3455,52 @@ async function handleRecall(db, params) {
     query
   };
 }
+async function handleRemember(db, params) {
+  const { content, context, projectId } = params;
+  if (!content || content.trim().length === 0) {
+    return {
+      success: false,
+      error: "Content is required"
+    };
+  }
+  const textToEmbed = context ? `${content} ${context}` : content;
+  const embedding = await embedQuery(textToEmbed);
+  const result = storeManualMemory(db, content, embedding, projectId || null, context);
+  if (result.isDuplicate) {
+    return {
+      success: true,
+      isDuplicate: true,
+      id: result.id,
+      message: "This content already exists in memory"
+    };
+  }
+  saveDb(db);
+  return {
+    success: true,
+    id: result.id,
+    message: `Remembered: "${content.length > 50 ? content.substring(0, 50) + "..." : content}"`,
+    projectId: projectId || null
+  };
+}
 async function handleSave(db, params) {
-  const { transcriptPath, projectId, global = false } = params;
+  let { transcriptPath, projectId } = params;
+  const { global = false } = params;
+  if (!transcriptPath) {
+    if (!projectId) {
+      return {
+        success: false,
+        error: "Either transcriptPath or projectId must be provided to archive session."
+      };
+    }
+    const currentSession = getCurrentSession(projectId);
+    if (!currentSession) {
+      return {
+        success: false,
+        error: `No active session found for project: ${projectId}. Session must be started first.`
+      };
+    }
+    transcriptPath = currentSession.transcriptPath;
+  }
   const effectiveProjectId = global ? null : projectId || null;
   const result = await archiveSession(db, transcriptPath, effectiveProjectId);
   return {
@@ -3389,7 +3508,8 @@ async function handleSave(db, params) {
     archived: result.archived,
     skipped: result.skipped,
     duplicates: result.duplicates,
-    projectId: effectiveProjectId
+    projectId: effectiveProjectId,
+    transcriptPath
   };
 }
 async function handleStats(db, params) {
@@ -3628,7 +3748,11 @@ var MCPServer = class {
       case "cortex_recall":
         result = await handleRecall(this.db, args);
         break;
+      case "cortex_remember":
+        result = await handleRemember(this.db, args);
+        break;
       case "cortex_save":
+      case "cortex_archive":
         result = await handleSave(this.db, args);
         break;
       case "cortex_stats":

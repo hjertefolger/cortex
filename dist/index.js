@@ -99,6 +99,44 @@ function applyPreset(preset) {
 function getAnalyticsPath() {
   return path.join(getDataDir(), "analytics.json");
 }
+function getSessionsPath() {
+  return path.join(getDataDir(), "sessions.json");
+}
+function loadSessions() {
+  const sessionsPath = getSessionsPath();
+  if (!fs.existsSync(sessionsPath)) {
+    return {};
+  }
+  try {
+    const content = fs.readFileSync(sessionsPath, "utf8");
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+function saveSessions(sessions) {
+  ensureDataDir();
+  fs.writeFileSync(getSessionsPath(), JSON.stringify(sessions, null, 2), "utf8");
+}
+function saveCurrentSession(transcriptPath, projectId) {
+  if (!projectId) {
+    return;
+  }
+  const sessions = loadSessions();
+  sessions[projectId] = {
+    transcriptPath,
+    projectId,
+    savedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  saveSessions(sessions);
+}
+function markSetupComplete() {
+  const config = loadConfig();
+  config.setup.completed = true;
+  config.setup.completedAt = (/* @__PURE__ */ new Date()).toISOString();
+  saveConfig(config);
+  return config;
+}
 var DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_MONITOR_CONFIG, DEFAULT_AUTOMATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG, CONFIG_PRESETS;
 var init_config = __esm({
   "src/config.ts"() {
@@ -2557,6 +2595,7 @@ __export(database_exports, {
   saveDb: () => saveDb,
   searchByKeyword: () => searchByKeyword,
   searchByVector: () => searchByVector,
+  storeManualMemory: () => storeManualMemory,
   updateMemory: () => updateMemory
 });
 import * as fs2 from "fs";
@@ -2721,6 +2760,19 @@ function contentExists(db, content) {
 function deleteMemory(db, id) {
   db.run(`DELETE FROM memories WHERE id = ?`, [id]);
   return db.getRowsModified() > 0;
+}
+function storeManualMemory(db, content, embedding, projectId, context) {
+  const fullContent = context ? `${content}
+
+[Context: ${context}]` : content;
+  const sessionId = `manual-${Date.now()}`;
+  return insertMemory(db, {
+    content: fullContent,
+    embedding,
+    projectId,
+    sourceSession: sessionId,
+    timestamp: /* @__PURE__ */ new Date()
+  });
 }
 function updateMemory(db, id, newContent, newEmbedding) {
   const newHash = hashContent(newContent);
@@ -3482,8 +3534,6 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
     const embedding = embeddings[i];
     const { isDuplicate } = insertMemory(db, {
       content,
-      contentHash: "",
-      // Will be computed by insertMemory
       embedding,
       projectId,
       sourceSession: sessionId,
@@ -3819,6 +3869,9 @@ async function handleSessionStart() {
   }
   const db = await initDb();
   const projectId = stdin?.cwd ? getProjectId(stdin.cwd) : null;
+  if (stdin?.transcript_path) {
+    saveCurrentSession(stdin.transcript_path, projectId);
+  }
   startSession(projectId);
   const projectStats = projectId ? getProjectStats(db, projectId) : null;
   if (projectStats && projectStats.fragmentCount > 0) {
@@ -4038,10 +4091,12 @@ async function handleSetup() {
   const db = await initDb();
   saveDb(db);
   console.log("  \u2713 Database initialized");
-  const { existsSync: existsSync5 } = await import("fs");
+  const fs5 = await import("fs");
+  const path2 = await import("path");
+  const os2 = await import("os");
   const pluginDir = new URL(".", import.meta.url).pathname.replace("/dist/", "");
   const nodeModulesPath = `${pluginDir}/node_modules`;
-  if (!existsSync5(nodeModulesPath)) {
+  if (!fs5.existsSync(nodeModulesPath)) {
     console.log("  \u23F3 Installing dependencies (first run only)...");
     const { execSync } = await import("child_process");
     try {
@@ -4067,13 +4122,39 @@ async function handleSetup() {
     console.log(`  \u2717 Model failed: ${modelStatus.error}`);
     return;
   }
+  console.log("  \u23F3 Configuring statusline...");
+  const claudeDir = path2.join(os2.homedir(), ".claude");
+  const claudeSettingsPath = path2.join(claudeDir, "settings.json");
+  if (!fs5.existsSync(claudeDir)) {
+    fs5.mkdirSync(claudeDir, { recursive: true });
+  }
+  let claudeSettings = {};
+  if (fs5.existsSync(claudeSettingsPath)) {
+    try {
+      claudeSettings = JSON.parse(fs5.readFileSync(claudeSettingsPath, "utf8"));
+    } catch {
+      claudeSettings = {};
+    }
+  }
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
+  claudeSettings.statusLine = {
+    type: "command",
+    command: `node ${pluginRoot}/dist/index.js statusline`
+  };
+  fs5.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2), "utf8");
+  console.log("  \u2713 Statusline configured");
+  markSetupComplete();
+  console.log("  \u2713 Setup marked complete");
   console.log("");
   console.log("[Cortex] Setup complete!");
   console.log("");
-  console.log("Next steps:");
-  console.log("  1. Install the plugin in Claude Code settings");
-  console.log("  2. Use /save to archive session context");
-  console.log("  3. Use /recall <query> to search memories");
+  console.log(`${ANSI.yellow}Important: Restart Claude Code to activate the statusline${ANSI.reset}`);
+  console.log("");
+  console.log("Commands available:");
+  console.log("  /cortex:save     - Archive session context");
+  console.log("  /cortex:recall   - Search memories");
+  console.log("  /cortex:stats    - View memory statistics");
+  console.log("  /cortex:configure - Adjust settings");
 }
 async function handleConfigure(args) {
   const preset = args[0];

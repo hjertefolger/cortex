@@ -4,8 +4,8 @@
  */
 
 import * as readline from 'readline';
-import { initDb, getStats, getProjectStats, getMemory, deleteMemory, saveDb, searchByVector, searchByKeyword } from './database.js';
-import { loadConfig, getDataDir } from './config.js';
+import { initDb, getStats, getProjectStats, getMemory, deleteMemory, storeManualMemory, saveDb, searchByVector, searchByKeyword } from './database.js';
+import { loadConfig, getDataDir, getCurrentSession } from './config.js';
 import { hybridSearch } from './search.js';
 import { archiveSession } from './archive.js';
 import { embedQuery } from './embeddings.js';
@@ -83,14 +83,36 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'cortex_remember',
+    description: 'Save a specific insight, decision, or fact to memory. Use for important information worth preserving during the conversation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'The content to remember (decision, insight, fact, etc.)',
+        },
+        context: {
+          type: 'string',
+          description: 'Optional context about why this is important',
+        },
+        projectId: {
+          type: 'string',
+          description: 'Project ID to associate with this memory',
+        },
+      },
+      required: ['content'],
+    },
+  },
+  {
     name: 'cortex_save',
-    description: 'Archive the current session to Cortex memory. Use before clearing context or when context is high.',
+    description: 'Archive the current session to Cortex memory. Use before clearing context or when context is high. Transcript path is auto-detected from current session.',
     inputSchema: {
       type: 'object',
       properties: {
         transcriptPath: {
           type: 'string',
-          description: 'Path to the transcript file to archive',
+          description: 'Path to the transcript file (optional - auto-detected from current session)',
         },
         projectId: {
           type: 'string',
@@ -101,7 +123,27 @@ const TOOLS: Tool[] = [
           description: 'Save as global memories (not project-specific)',
         },
       },
-      required: ['transcriptPath'],
+    },
+  },
+  {
+    name: 'cortex_archive',
+    description: 'Archive the current session to Cortex memory (alias for cortex_save). Transcript path is auto-detected from current session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        transcriptPath: {
+          type: 'string',
+          description: 'Path to the transcript file (optional - auto-detected from current session)',
+        },
+        projectId: {
+          type: 'string',
+          description: 'Project ID to associate with the memories',
+        },
+        global: {
+          type: 'boolean',
+          description: 'Save as global memories (not project-specific)',
+        },
+      },
     },
   },
   {
@@ -216,11 +258,70 @@ async function handleRecall(
   };
 }
 
+async function handleRemember(
+  db: SqlJsDatabase,
+  params: { content: string; context?: string; projectId?: string }
+): Promise<unknown> {
+  const { content, context, projectId } = params;
+
+  if (!content || content.trim().length === 0) {
+    return {
+      success: false,
+      error: 'Content is required',
+    };
+  }
+
+  // Generate embedding for the content
+  const textToEmbed = context ? `${content} ${context}` : content;
+  const embedding = await embedQuery(textToEmbed);
+
+  // Store the memory
+  const result = storeManualMemory(db, content, embedding, projectId || null, context);
+
+  if (result.isDuplicate) {
+    return {
+      success: true,
+      isDuplicate: true,
+      id: result.id,
+      message: 'This content already exists in memory',
+    };
+  }
+
+  // Persist to disk
+  saveDb(db);
+
+  return {
+    success: true,
+    id: result.id,
+    message: `Remembered: "${content.length > 50 ? content.substring(0, 50) + '...' : content}"`,
+    projectId: projectId || null,
+  };
+}
+
 async function handleSave(
   db: SqlJsDatabase,
-  params: { transcriptPath: string; projectId?: string; global?: boolean }
+  params: { transcriptPath?: string; projectId?: string; global?: boolean }
 ): Promise<unknown> {
-  const { transcriptPath, projectId, global = false } = params;
+  let { transcriptPath, projectId } = params;
+  const { global = false } = params;
+
+  // If transcriptPath not provided, look up by projectId
+  if (!transcriptPath) {
+    if (!projectId) {
+      return {
+        success: false,
+        error: 'Either transcriptPath or projectId must be provided to archive session.',
+      };
+    }
+    const currentSession = getCurrentSession(projectId);
+    if (!currentSession) {
+      return {
+        success: false,
+        error: `No active session found for project: ${projectId}. Session must be started first.`,
+      };
+    }
+    transcriptPath = currentSession.transcriptPath;
+  }
 
   const effectiveProjectId = global ? null : projectId || null;
 
@@ -232,6 +333,7 @@ async function handleSave(
     skipped: result.skipped,
     duplicates: result.duplicates,
     projectId: effectiveProjectId,
+    transcriptPath,
   };
 }
 
@@ -546,7 +648,13 @@ class MCPServer {
         result = await handleRecall(this.db, args as Parameters<typeof handleRecall>[1]);
         break;
 
+      case 'cortex_remember':
+        result = await handleRemember(this.db, args as Parameters<typeof handleRemember>[1]);
+        break;
+
       case 'cortex_save':
+      case 'cortex_archive':
+        // Both names supported - cortex_archive is the canonical name, cortex_save is for backward compatibility
         result = await handleSave(this.db, args as Parameters<typeof handleSave>[1]);
         break;
 

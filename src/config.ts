@@ -260,6 +260,76 @@ export function getAnalyticsPath(): string {
 }
 
 /**
+ * Get the sessions file path (stores all active sessions keyed by projectId)
+ */
+export function getSessionsPath(): string {
+  return path.join(getDataDir(), 'sessions.json');
+}
+
+interface SessionInfo {
+  transcriptPath: string;
+  projectId: string;
+  savedAt: string;
+}
+
+interface SessionsStore {
+  [projectId: string]: SessionInfo;
+}
+
+/**
+ * Load all sessions
+ */
+function loadSessions(): SessionsStore {
+  const sessionsPath = getSessionsPath();
+  if (!fs.existsSync(sessionsPath)) {
+    return {};
+  }
+  try {
+    const content = fs.readFileSync(sessionsPath, 'utf8');
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Save all sessions
+ */
+function saveSessions(sessions: SessionsStore): void {
+  ensureDataDir();
+  fs.writeFileSync(getSessionsPath(), JSON.stringify(sessions, null, 2), 'utf8');
+}
+
+/**
+ * Save current session info (transcript path, project)
+ * Keyed by projectId so multiple instances don't conflict
+ */
+export function saveCurrentSession(transcriptPath: string, projectId: string | null): void {
+  if (!projectId) {
+    // Can't store without a projectId key
+    return;
+  }
+  const sessions = loadSessions();
+  sessions[projectId] = {
+    transcriptPath,
+    projectId,
+    savedAt: new Date().toISOString(),
+  };
+  saveSessions(sessions);
+}
+
+/**
+ * Get session info for a specific project
+ */
+export function getCurrentSession(projectId?: string): { transcriptPath: string; projectId: string } | null {
+  if (!projectId) {
+    return null;
+  }
+  const sessions = loadSessions();
+  return sessions[projectId] || null;
+}
+
+/**
  * Mark setup as completed
  */
 export function markSetupComplete(): Config {

@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import initSqlJs, { Database as SqlJsDatabase, SqlValue } from 'sql.js';
 import { getDatabasePath, ensureDataDir } from './config.js';
-import type { Memory, DbStats } from './types.js';
+import type { Memory, MemoryInput, DbStats } from './types.js';
 import * as crypto from 'crypto';
 
 // ============================================================================
@@ -184,7 +184,7 @@ function bufferToEmbedding(buffer: Buffer): Float32Array {
  */
 export function insertMemory(
   db: SqlJsDatabase,
-  memory: Omit<Memory, 'id'>
+  memory: MemoryInput
 ): { id: number; isDuplicate: boolean } {
   const hash = hashContent(memory.content);
 
@@ -263,6 +263,34 @@ export function contentExists(db: SqlJsDatabase, content: string): boolean {
 export function deleteMemory(db: SqlJsDatabase, id: number): boolean {
   db.run(`DELETE FROM memories WHERE id = ?`, [id]);
   return db.getRowsModified() > 0;
+}
+
+/**
+ * Store a manual memory (from cortex_remember tool)
+ * Unlike insertMemory, this creates a unique session ID for manual entries
+ */
+export function storeManualMemory(
+  db: SqlJsDatabase,
+  content: string,
+  embedding: Float32Array,
+  projectId: string | null,
+  context?: string
+): { id: number; isDuplicate: boolean } {
+  // Combine content with context if provided
+  const fullContent = context
+    ? `${content}\n\n[Context: ${context}]`
+    : content;
+
+  // Generate a unique session identifier for manual entries
+  const sessionId = `manual-${Date.now()}`;
+
+  return insertMemory(db, {
+    content: fullContent,
+    embedding,
+    projectId,
+    sourceSession: sessionId,
+    timestamp: new Date(),
+  });
 }
 
 /**

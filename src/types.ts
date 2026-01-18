@@ -41,6 +41,12 @@ export interface Memory {
   timestamp: Date;
 }
 
+/**
+ * Input type for creating a new memory
+ * contentHash is computed from content, id is auto-generated
+ */
+export type MemoryInput = Omit<Memory, 'id' | 'contentHash'>;
+
 export interface DbStats {
   fragmentCount: number;
   projectCount: number;

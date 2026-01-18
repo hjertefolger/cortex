@@ -308,7 +308,6 @@ export async function archiveSession(
 
     const { isDuplicate } = insertMemory(db, {
       content,
-      contentHash: '', // Will be computed by insertMemory
       embedding,
       projectId,
       sourceSession: sessionId,
@@ -354,7 +353,6 @@ export async function archiveContent(
 
   const { isDuplicate } = insertMemory(db, {
     content,
-    contentHash: '',
     embedding,
     projectId,
     sourceSession: 'manual',
