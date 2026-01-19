@@ -1,5 +1,5 @@
 ---
-name: cortex:stats
+name: cortex-stats
 description: Display Cortex memory statistics
 allowed-tools: mcp__cortex-memory__cortex_stats, mcp__cortex-memory__cortex_analytics
 user-invocable: true
@@ -19,7 +19,7 @@ Display memory statistics and session analytics.
 
 ## Usage
 
-When the user invokes `/cortex:stats`, retrieve and display:
+When the user invokes `/cortex-stats`, retrieve and display:
 
 1. **Memory Stats** using `cortex_stats`:
    - Total fragments, projects, sessions

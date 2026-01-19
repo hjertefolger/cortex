@@ -1,5 +1,5 @@
 ---
-name: cortex:setup
+name: cortex-setup
 description: Initialize Cortex for first-time use
 allowed-tools: Bash, Write, Read, AskUserQuestion
 user-invocable: true
@@ -80,12 +80,12 @@ Ask if user wants to enable the status line, then update `~/.claude/settings.jso
 
 Confirm setup is complete and show next steps:
 
-- Use `/cortex:save` to archive context
+- Use `/cortex-save` to archive context
 - Use recall tool for past context
-- Use `/cortex:configure` to adjust settings later
+- Use `/cortex-configure` to adjust settings later
 
 ## Important Notes
 
 - This wizard should only run once (first time setup)
-- After setup, use `/cortex:configure` for adjustments
+- After setup, use `/cortex-configure` for adjustments
 - All data is stored locally in `~/.cortex`

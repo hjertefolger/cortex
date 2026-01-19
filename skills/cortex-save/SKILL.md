@@ -1,5 +1,5 @@
 ---
-name: cortex:save
+name: cortex-save
 description: Archive current session to memory. Use before clearing or when context is high.
 allowed-tools: mcp__cortex-memory__cortex_save, mcp__cortex-memory__cortex_archive, mcp__cortex-memory__cortex_remember
 ---

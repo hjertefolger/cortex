@@ -107,12 +107,12 @@ cortex/
 │   └── plugin.json      # Plugin metadata
 ├── .mcp.json            # MCP server configuration
 ├── skills/
-│   ├── setup/SKILL.md   # Setup wizard (/cortex:setup)
-│   ├── configure/SKILL.md # Configuration (/cortex:configure)
-│   ├── stats/SKILL.md   # Statistics display (/cortex:stats)
-│   ├── recall/SKILL.md  # Memory search (/cortex:recall)
-│   ├── save/SKILL.md    # Save context (/cortex:save)
-│   └── manage/SKILL.md  # Memory management (/cortex:manage)
+│   ├── cortex-setup/SKILL.md     # Setup wizard (/cortex-setup)
+│   ├── cortex-configure/SKILL.md # Configuration (/cortex-configure)
+│   ├── cortex-stats/SKILL.md     # Statistics display (/cortex-stats)
+│   ├── cortex-recall/SKILL.md    # Memory search (/cortex-recall)
+│   ├── cortex-save/SKILL.md      # Save context (/cortex-save)
+│   └── cortex-manage/SKILL.md    # Memory management (/cortex-manage)
 ├── hooks/
 │   └── hooks.json       # SessionStart, PostToolUse, PreCompact
 ├── src/                 # TypeScript source
@@ -148,12 +148,12 @@ The MCP server exposes these tools:
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| setup | `/cortex:setup` | First-time initialization |
-| configure | `/cortex:configure` | Adjust settings |
-| stats | `/cortex:stats` | View memory statistics |
-| save | `/cortex:save` | Archive session context |
-| recall | `/cortex:recall` | Search memories |
-| manage | `/cortex:manage` | Delete/manage memories |
+| cortex-setup | `/cortex-setup` | First-time initialization |
+| cortex-configure | `/cortex-configure` | Adjust settings |
+| cortex-stats | `/cortex-stats` | View memory statistics |
+| cortex-save | `/cortex-save` | Archive session context |
+| cortex-recall | `/cortex-recall` | Search memories |
+| cortex-manage | `/cortex-manage` | Delete/manage memories |
 
 ## Hooks
 
@@ -209,7 +209,7 @@ Config file: `~/.cortex/config.json`
 ## Setup Flow
 
 On first run:
-1. Run `/cortex:setup` to initialize
+1. Run `/cortex-setup` to initialize
 2. Setup wizard creates `~/.cortex` directory
 3. Initializes database and downloads embedding model
 4. Configures statusline in `~/.claude/settings.json`
@@ -217,7 +217,7 @@ On first run:
 
 After setup:
 - Statusline appears in Claude Code (requires restart)
-- Use `/cortex:configure` to adjust settings
+- Use `/cortex-configure` to adjust settings
 - Memory tools are available via MCP
 
 ## Analytics

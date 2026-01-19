@@ -1,5 +1,5 @@
 ---
-name: cortex:configure
+name: cortex-configure
 description: Configure Cortex settings with presets
 allowed-tools: Bash, Write, Read, AskUserQuestion
 user-invocable: true

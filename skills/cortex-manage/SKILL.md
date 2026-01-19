@@ -1,5 +1,5 @@
 ---
-name: cortex:manage
+name: cortex-manage
 description: Manage memories - search, view, delete, update fragments
 allowed-tools: mcp__cortex-memory__cortex_recall, mcp__cortex-memory__cortex_delete, mcp__cortex-memory__cortex_forget_project, AskUserQuestion
 user-invocable: true

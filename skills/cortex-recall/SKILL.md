@@ -1,5 +1,5 @@
 ---
-name: cortex:recall
+name: cortex-recall
 description: Search local memory for past context. Use when user references past work or needs historical context.
 allowed-tools: mcp__cortex-memory__cortex_recall
 ---
@@ -42,8 +42,8 @@ cortex_recall(query: "authentication implementation", limit: 5)
 ## Related Tools
 
 - **To save something**: Use `cortex_remember` from the save skill
-- **To view all memories**: Use `/cortex:stats` for an overview
-- **To delete memories**: Use `/cortex:manage`
+- **To view all memories**: Use `/cortex-stats` for an overview
+- **To delete memories**: Use `/cortex-manage`
 
 ## Notes
 
