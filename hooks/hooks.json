@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js clear-reminder",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [

@@ -4,7 +4,7 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, type ConfigPreset } from './config.js';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
@@ -25,6 +25,8 @@ const ANSI = {
   red: '\x1b[31m',
   cyan: '\x1b[36m',
   gray: '\x1b[90m',
+  darkGray: '\x1b[38;5;240m',        // Darker grey for separators
+  brick: '\x1b[38;2;217;119;87m',    // Claude terracotta/brick #D97757
 };
 
 // ============================================================================
@@ -51,6 +53,10 @@ async function main() {
 
       case 'context-check':
         await handleContextCheck();
+        break;
+
+      case 'clear-reminder':
+        await handleClearReminder();
         break;
 
       case 'pre-compact':
@@ -123,33 +129,22 @@ async function handleStatusline() {
   // === Statusline display (only if enabled) ===
   if (config.statusline.enabled) {
     const stats = getStats(db);
-    const parts: string[] = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
+    const sep = `${ANSI.darkGray} · ${ANSI.reset}`;
+    const parts: string[] = [`${ANSI.brick}Cortex${ANSI.reset}`];
 
     // Fragment count
     if (config.statusline.showFragments) {
       parts.push(`${stats.fragmentCount} frags`);
     }
 
-    // Project info
-    if (stdin?.cwd && projectId) {
-      const projectStats = getProjectStats(db, projectId);
-
-      parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
-
-      // Last archive time
-      if (config.statusline.showLastArchive && projectStats.lastArchive) {
-        parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
-      }
-
-      // Context usage with colored progress bar
-      if (config.statusline.showContext) {
-        const progressBar = createProgressBar(contextPercent);
-        parts.push(progressBar);
-      }
+    // Context usage with circle strip
+    if (config.statusline.showContext) {
+      const contextStrip = createContextStrip(contextPercent);
+      parts.push(contextStrip);
     }
 
     // Output statusline
-    console.log(parts.join(' | '));
+    console.log(parts.join(sep));
   }
 
   // === Auto-save logic (runs after statusline display) ===
@@ -162,63 +157,49 @@ async function handleStatusline() {
       updateContextPercent(contextPercent);
 
       if (transcriptPath) {
-        // Perform auto-save
-        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% (threshold: ${config.automation.autoSaveThreshold}%). Auto-saving...`);
+        // Perform auto-save (silent - only output result)
 
         const result = await archiveSession(db, transcriptPath, projectId);
 
         if (result.archived > 0) {
           recordSavePoint(contextPercent, result.archived);
           markAutoSaved(transcriptPath, contextPercent);
-          console.error(`${ANSI.green}[Cortex]${ANSI.reset} Auto-saved ${result.archived} fragments`);
-
-          // Build restoration context
-          const restoration = await buildRestorationContext(db, projectId, {
-            messageCount: config.automation.restorationMessageCount,
-            tokenBudget: config.automation.restorationTokenBudget,
-          });
-
-          // Output clear instruction for Claude
-          console.error('');
-          console.error(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
-          console.error(formatRestorationContext(restoration));
-          console.error(`${ANSI.cyan}===========================${ANSI.reset}`);
-          console.error('');
-          console.error(`${ANSI.bold}${ANSI.yellow}ACTION REQUIRED:${ANSI.reset} Context saved. Run ${ANSI.cyan}/clear${ANSI.reset} to clear context and continue with restoration.`);
+          // Brief message - restoration context will show on /clear via PreCompact hook
+          console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} Auto-saved ${result.archived} fragments. Run ${ANSI.cyan}/clear${ANSI.reset} to continue.`);
         } else {
           // No new content to save, but mark as saved to avoid retrying
           markAutoSaved(transcriptPath, contextPercent);
-          console.error(`${ANSI.dim}[Cortex] No new content to archive${ANSI.reset}`);
         }
-      } else {
-        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% but no transcript available for auto-save`);
       }
+      // Silent if no transcript - nothing we can do
     }
   }
 }
 
 /**
- * Create a colored progress bar for context usage
+ * Create a context strip with 10 circles (each = 10%)
+ * ● = filled, ○ = empty
+ * Color: green (<70%), yellow (70-84%), red (>=85%)
  */
-function createProgressBar(percent: number): string {
-  const width = 10;
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
+function createContextStrip(percent: number): string {
+  const totalCircles = 10;
+  const filled = Math.round((percent / 100) * totalCircles);
+  const empty = totalCircles - filled;
 
-  // Color based on percentage
+  // Color based on percentage: brick → yellow → red
   let color: string;
   if (percent < 70) {
-    color = ANSI.green;
+    color = ANSI.brick;
   } else if (percent < 85) {
     color = ANSI.yellow;
   } else {
     color = ANSI.red;
   }
 
-  const filledBar = '\u2588'.repeat(filled); // Full block
-  const emptyBar = '\u2591'.repeat(empty);   // Light shade
+  const filledCircles = '●'.repeat(filled);
+  const emptyCircles = '○'.repeat(empty);
 
-  return `${color}${filledBar}${ANSI.dim}${emptyBar}${ANSI.reset} ${percent}%`;
+  return `${color}${filledCircles}${ANSI.dim}${emptyCircles}${ANSI.reset} ${percent}%`;
 }
 
 // ============================================================================
@@ -255,46 +236,24 @@ async function handleSessionStart() {
   const projectStats = projectId ? getProjectStats(db, projectId) : null;
 
   if (projectStats && projectStats.fragmentCount > 0) {
-    // Get recent context summary
-    const recentContext = await getRecentContextSummary(db, projectId);
+    // Build full restoration context for Claude
+    const restoration = await buildRestorationContext(db, projectId, {
+      messageCount: config.automation.restorationMessageCount,
+      tokenBudget: config.automation.restorationTokenBudget,
+    });
 
     console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} ${projectStats.fragmentCount} memories for ${ANSI.bold}${projectId}${ANSI.reset}`);
 
-    if (recentContext) {
-      console.log(`${ANSI.dim}  Last session: ${recentContext}${ANSI.reset}`);
+    if (restoration.hasContent) {
+      console.log('');
+      console.log(`${ANSI.dim}--- Restoration Context ---${ANSI.reset}`);
+      console.log(formatRestorationContext(restoration));
+      console.log(`${ANSI.dim}---------------------------${ANSI.reset}`);
     }
   } else if (projectId) {
     console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Ready for ${ANSI.bold}${projectId}${ANSI.reset} (no memories yet)`);
   } else {
     console.log(`${ANSI.cyan}[Cortex]${ANSI.reset} Session started`);
-  }
-}
-
-/**
- * Get a brief summary of recent context for a project
- */
-async function getRecentContextSummary(db: Awaited<ReturnType<typeof initDb>>, projectId: string | null): Promise<string | null> {
-  try {
-    // Get most recent memory for the project
-    const queryEmbedding = await embedQuery('recent work context');
-    const results = searchByVector(db, queryEmbedding, projectId, 1);
-
-    if (results.length === 0) {
-      return null;
-    }
-
-    const recent = results[0];
-    const timeAgo = formatDuration(recent.timestamp);
-
-    // Truncate content for summary
-    const maxLen = 60;
-    const content = recent.content.length > maxLen
-      ? recent.content.substring(0, maxLen).trim() + '...'
-      : recent.content;
-
-    return `${timeAgo} - "${content}"`;
-  } catch {
-    return null;
   }
 }
 
@@ -312,6 +271,32 @@ async function handleMonitor() {
 
   if (contextPercent >= config.monitor.tokenThreshold) {
     console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% - consider archiving with /cortex:save`);
+  }
+}
+
+/**
+ * Clear reminder handler - lightweight PostToolUse hook
+ * Just checks if auto-save happened and reminds Claude to suggest /clear
+ * Outputs JSON with additionalContext so Claude sees the message
+ */
+async function handleClearReminder() {
+  const stdin = await readStdin();
+  const config = loadConfig();
+
+  if (!stdin || !config.automation.autoClearEnabled) return;
+
+  const state = loadAutoSaveState();
+
+  // If auto-save happened this session, remind Claude via JSON output
+  if (state.hasSavedThisSession) {
+    const contextPercent = getContextPercent(stdin);
+    const output = {
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `[Cortex] Session auto-saved at ${state.lastAutoSaveContext}% context. Tell the user: "Your session has been auto-saved. Run /clear when ready to free up context - restoration context will help continue where we left off."`
+      }
+    };
+    console.log(JSON.stringify(output));
   }
 }
 
@@ -719,6 +704,7 @@ export {
   handleSessionStart,
   handleMonitor,
   handleContextCheck,
+  handleClearReminder,
   handlePreCompact,
   handleSmartCompact,
   handleSave,
