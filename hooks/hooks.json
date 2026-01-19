@@ -12,18 +12,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/index.js context-check",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
     "PreCompact": [
       {
         "hooks": [

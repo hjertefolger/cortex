@@ -347,3 +347,99 @@ export function isSetupComplete(): boolean {
   const config = loadConfig();
   return config.setup.completed;
 }
+
+// ============================================================================
+// Auto-Save State Management
+// ============================================================================
+
+interface AutoSaveState {
+  lastAutoSaveTimestamp: string | null;
+  lastAutoSaveContext: number;
+  transcriptPath: string | null;
+  hasSavedThisSession: boolean;
+}
+
+const DEFAULT_AUTO_SAVE_STATE: AutoSaveState = {
+  lastAutoSaveTimestamp: null,
+  lastAutoSaveContext: 0,
+  transcriptPath: null,
+  hasSavedThisSession: false,
+};
+
+/**
+ * Get the auto-save state file path
+ */
+export function getAutoSaveStatePath(): string {
+  return path.join(getDataDir(), 'auto-save-state.json');
+}
+
+/**
+ * Load auto-save state from disk
+ */
+export function loadAutoSaveState(): AutoSaveState {
+  const statePath = getAutoSaveStatePath();
+  if (!fs.existsSync(statePath)) {
+    return { ...DEFAULT_AUTO_SAVE_STATE };
+  }
+  try {
+    const content = fs.readFileSync(statePath, 'utf8');
+    return { ...DEFAULT_AUTO_SAVE_STATE, ...JSON.parse(content) };
+  } catch {
+    return { ...DEFAULT_AUTO_SAVE_STATE };
+  }
+}
+
+/**
+ * Save auto-save state to disk
+ */
+export function saveAutoSaveState(state: AutoSaveState): void {
+  ensureDataDir();
+  fs.writeFileSync(getAutoSaveStatePath(), JSON.stringify(state, null, 2), 'utf8');
+}
+
+/**
+ * Check if we should trigger auto-save
+ * Returns true if:
+ * - Context is above threshold
+ * - Haven't already saved this session
+ * - OR transcript path changed (new session)
+ */
+export function shouldAutoSave(currentContext: number, transcriptPath: string | null, threshold: number): boolean {
+  if (currentContext < threshold) {
+    return false;
+  }
+
+  const state = loadAutoSaveState();
+
+  // New transcript = new session, allow save
+  if (transcriptPath && state.transcriptPath !== transcriptPath) {
+    return true;
+  }
+
+  // Already saved this session
+  if (state.hasSavedThisSession) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Mark that we've auto-saved for this session
+ */
+export function markAutoSaved(transcriptPath: string | null, contextPercent: number): void {
+  const state: AutoSaveState = {
+    lastAutoSaveTimestamp: new Date().toISOString(),
+    lastAutoSaveContext: contextPercent,
+    transcriptPath,
+    hasSavedThisSession: true,
+  };
+  saveAutoSaveState(state);
+}
+
+/**
+ * Reset auto-save state (call on session start or after clear)
+ */
+export function resetAutoSaveState(): void {
+  saveAutoSaveState({ ...DEFAULT_AUTO_SAVE_STATE });
+}

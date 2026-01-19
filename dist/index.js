@@ -137,7 +137,51 @@ function markSetupComplete() {
   saveConfig(config);
   return config;
 }
-var DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_MONITOR_CONFIG, DEFAULT_AUTOMATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG, CONFIG_PRESETS;
+function getAutoSaveStatePath() {
+  return path.join(getDataDir(), "auto-save-state.json");
+}
+function loadAutoSaveState() {
+  const statePath = getAutoSaveStatePath();
+  if (!fs.existsSync(statePath)) {
+    return { ...DEFAULT_AUTO_SAVE_STATE };
+  }
+  try {
+    const content = fs.readFileSync(statePath, "utf8");
+    return { ...DEFAULT_AUTO_SAVE_STATE, ...JSON.parse(content) };
+  } catch {
+    return { ...DEFAULT_AUTO_SAVE_STATE };
+  }
+}
+function saveAutoSaveState(state) {
+  ensureDataDir();
+  fs.writeFileSync(getAutoSaveStatePath(), JSON.stringify(state, null, 2), "utf8");
+}
+function shouldAutoSave(currentContext, transcriptPath, threshold) {
+  if (currentContext < threshold) {
+    return false;
+  }
+  const state = loadAutoSaveState();
+  if (transcriptPath && state.transcriptPath !== transcriptPath) {
+    return true;
+  }
+  if (state.hasSavedThisSession) {
+    return false;
+  }
+  return true;
+}
+function markAutoSaved(transcriptPath, contextPercent) {
+  const state = {
+    lastAutoSaveTimestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    lastAutoSaveContext: contextPercent,
+    transcriptPath,
+    hasSavedThisSession: true
+  };
+  saveAutoSaveState(state);
+}
+function resetAutoSaveState() {
+  saveAutoSaveState({ ...DEFAULT_AUTO_SAVE_STATE });
+}
+var DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_MONITOR_CONFIG, DEFAULT_AUTOMATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG, CONFIG_PRESETS, DEFAULT_AUTO_SAVE_STATE;
 var init_config = __esm({
   "src/config.ts"() {
     "use strict";
@@ -247,6 +291,12 @@ var init_config = __esm({
           restorationMessageCount: 3
         }
       }
+    };
+    DEFAULT_AUTO_SAVE_STATE = {
+      lastAutoSaveTimestamp: null,
+      lastAutoSaveContext: 0,
+      transcriptPath: null,
+      hasSavedThisSession: false
     };
   }
 });
@@ -3820,29 +3870,62 @@ async function main() {
 async function handleStatusline() {
   const stdin = await readStdin();
   const config = loadConfig();
-  if (!config.statusline.enabled) {
-    return;
-  }
   const db = await initDb();
-  const stats = getStats(db);
-  const parts = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
-  if (config.statusline.showFragments) {
-    parts.push(`${stats.fragmentCount} frags`);
-  }
+  let contextPercent = 0;
+  let projectId = null;
   if (stdin?.cwd) {
-    const projectId = getProjectId(stdin.cwd);
-    const projectStats = getProjectStats(db, projectId);
-    parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
-    if (config.statusline.showLastArchive && projectStats.lastArchive) {
-      parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
+    projectId = getProjectId(stdin.cwd);
+    contextPercent = getContextPercent(stdin);
+  }
+  if (config.statusline.enabled) {
+    const stats = getStats(db);
+    const parts = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
+    if (config.statusline.showFragments) {
+      parts.push(`${stats.fragmentCount} frags`);
     }
-    if (config.statusline.showContext) {
-      const contextPercent = getContextPercent(stdin);
-      const progressBar = createProgressBar(contextPercent);
-      parts.push(progressBar);
+    if (stdin?.cwd && projectId) {
+      const projectStats = getProjectStats(db, projectId);
+      parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
+      if (config.statusline.showLastArchive && projectStats.lastArchive) {
+        parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
+      }
+      if (config.statusline.showContext) {
+        const progressBar = createProgressBar(contextPercent);
+        parts.push(progressBar);
+      }
+    }
+    console.log(parts.join(" | "));
+  }
+  if (contextPercent > 0 && config.automation.autoClearEnabled) {
+    const transcriptPath = stdin?.transcript_path || null;
+    if (shouldAutoSave(contextPercent, transcriptPath, config.automation.autoSaveThreshold)) {
+      updateContextPercent(contextPercent);
+      if (transcriptPath) {
+        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% (threshold: ${config.automation.autoSaveThreshold}%). Auto-saving...`);
+        const result = await archiveSession(db, transcriptPath, projectId);
+        if (result.archived > 0) {
+          recordSavePoint(contextPercent, result.archived);
+          markAutoSaved(transcriptPath, contextPercent);
+          console.error(`${ANSI.green}[Cortex]${ANSI.reset} Auto-saved ${result.archived} fragments`);
+          const restoration = await buildRestorationContext(db, projectId, {
+            messageCount: config.automation.restorationMessageCount,
+            tokenBudget: config.automation.restorationTokenBudget
+          });
+          console.error("");
+          console.error(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
+          console.error(formatRestorationContext(restoration));
+          console.error(`${ANSI.cyan}===========================${ANSI.reset}`);
+          console.error("");
+          console.error(`${ANSI.bold}${ANSI.yellow}ACTION REQUIRED:${ANSI.reset} Context saved. Run ${ANSI.cyan}/clear${ANSI.reset} to clear context and continue with restoration.`);
+        } else {
+          markAutoSaved(transcriptPath, contextPercent);
+          console.error(`${ANSI.dim}[Cortex] No new content to archive${ANSI.reset}`);
+        }
+      } else {
+        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% but no transcript available for auto-save`);
+      }
     }
   }
-  console.log(parts.join(" | "));
 }
 function createProgressBar(percent) {
   const width = 10;
@@ -3867,6 +3950,7 @@ async function handleSessionStart() {
     console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} First run detected. Run ${ANSI.cyan}/cortex:setup${ANSI.reset} to initialize.`);
     return;
   }
+  resetAutoSaveState();
   const db = await initDb();
   const projectId = stdin?.cwd ? getProjectId(stdin.cwd) : null;
   if (stdin?.transcript_path) {
@@ -4145,6 +4229,12 @@ async function handleSetup() {
   console.log("  \u2713 Statusline configured");
   markSetupComplete();
   console.log("  \u2713 Setup marked complete");
+  const stdin = await readStdin();
+  if (stdin?.transcript_path) {
+    const projectId = stdin.cwd ? getProjectId(stdin.cwd) : null;
+    saveCurrentSession(stdin.transcript_path, projectId);
+    console.log("  \u2713 Session registered");
+  }
   console.log("");
   console.log("[Cortex] Setup complete!");
   console.log("");

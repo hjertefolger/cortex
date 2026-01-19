@@ -4,7 +4,7 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, type ConfigPreset } from './config.js';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
@@ -108,42 +108,93 @@ async function handleStatusline() {
   const stdin = await readStdin();
   const config = loadConfig();
 
-  if (!config.statusline.enabled) {
-    return;
-  }
-
   // Initialize database (may create if doesn't exist)
   const db = await initDb();
-  const stats = getStats(db);
 
-  const parts: string[] = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
+  // Track context and check thresholds (always needed for auto-save)
+  let contextPercent = 0;
+  let projectId: string | null = null;
 
-  // Fragment count
-  if (config.statusline.showFragments) {
-    parts.push(`${stats.fragmentCount} frags`);
-  }
-
-  // Project info
   if (stdin?.cwd) {
-    const projectId = getProjectId(stdin.cwd);
-    const projectStats = getProjectStats(db, projectId);
-
-    parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
-
-    // Last archive time
-    if (config.statusline.showLastArchive && projectStats.lastArchive) {
-      parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
-    }
-
-    // Context usage with colored progress bar
-    if (config.statusline.showContext) {
-      const contextPercent = getContextPercent(stdin);
-      const progressBar = createProgressBar(contextPercent);
-      parts.push(progressBar);
-    }
+    projectId = getProjectId(stdin.cwd);
+    contextPercent = getContextPercent(stdin);
   }
 
-  console.log(parts.join(' | '));
+  // === Statusline display (only if enabled) ===
+  if (config.statusline.enabled) {
+    const stats = getStats(db);
+    const parts: string[] = [`${ANSI.cyan}[Cortex]${ANSI.reset}`];
+
+    // Fragment count
+    if (config.statusline.showFragments) {
+      parts.push(`${stats.fragmentCount} frags`);
+    }
+
+    // Project info
+    if (stdin?.cwd && projectId) {
+      const projectStats = getProjectStats(db, projectId);
+
+      parts.push(`${ANSI.bold}${projectId}${ANSI.reset}`);
+
+      // Last archive time
+      if (config.statusline.showLastArchive && projectStats.lastArchive) {
+        parts.push(`${ANSI.dim}Last: ${formatDuration(projectStats.lastArchive)}${ANSI.reset}`);
+      }
+
+      // Context usage with colored progress bar
+      if (config.statusline.showContext) {
+        const progressBar = createProgressBar(contextPercent);
+        parts.push(progressBar);
+      }
+    }
+
+    // Output statusline
+    console.log(parts.join(' | '));
+  }
+
+  // === Auto-save logic (runs after statusline display) ===
+  if (contextPercent > 0 && config.automation.autoClearEnabled) {
+    const transcriptPath = stdin?.transcript_path || null;
+
+    // Check if we should auto-save
+    if (shouldAutoSave(contextPercent, transcriptPath, config.automation.autoSaveThreshold)) {
+      // Track in analytics
+      updateContextPercent(contextPercent);
+
+      if (transcriptPath) {
+        // Perform auto-save
+        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% (threshold: ${config.automation.autoSaveThreshold}%). Auto-saving...`);
+
+        const result = await archiveSession(db, transcriptPath, projectId);
+
+        if (result.archived > 0) {
+          recordSavePoint(contextPercent, result.archived);
+          markAutoSaved(transcriptPath, contextPercent);
+          console.error(`${ANSI.green}[Cortex]${ANSI.reset} Auto-saved ${result.archived} fragments`);
+
+          // Build restoration context
+          const restoration = await buildRestorationContext(db, projectId, {
+            messageCount: config.automation.restorationMessageCount,
+            tokenBudget: config.automation.restorationTokenBudget,
+          });
+
+          // Output clear instruction for Claude
+          console.error('');
+          console.error(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
+          console.error(formatRestorationContext(restoration));
+          console.error(`${ANSI.cyan}===========================${ANSI.reset}`);
+          console.error('');
+          console.error(`${ANSI.bold}${ANSI.yellow}ACTION REQUIRED:${ANSI.reset} Context saved. Run ${ANSI.cyan}/clear${ANSI.reset} to clear context and continue with restoration.`);
+        } else {
+          // No new content to save, but mark as saved to avoid retrying
+          markAutoSaved(transcriptPath, contextPercent);
+          console.error(`${ANSI.dim}[Cortex] No new content to archive${ANSI.reset}`);
+        }
+      } else {
+        console.error(`${ANSI.yellow}[Cortex]${ANSI.reset} Context at ${contextPercent}% but no transcript available for auto-save`);
+      }
+    }
+  }
 }
 
 /**
@@ -183,6 +234,9 @@ async function handleSessionStart() {
     console.log(`${ANSI.yellow}[Cortex]${ANSI.reset} First run detected. Run ${ANSI.cyan}/cortex:setup${ANSI.reset} to initialize.`);
     return;
   }
+
+  // Reset auto-save state for new session
+  resetAutoSaveState();
 
   // Initialize database
   const db = await initDb();
@@ -599,6 +653,14 @@ async function handleSetup() {
   // Mark setup as complete
   markSetupComplete();
   console.log('  ✓ Setup marked complete');
+
+  // Save current session so MCP tools can access transcript path
+  const stdin = await readStdin();
+  if (stdin?.transcript_path) {
+    const projectId = stdin.cwd ? getProjectId(stdin.cwd) : null;
+    saveCurrentSession(stdin.transcript_path, projectId);
+    console.log('  ✓ Session registered');
+  }
 
   console.log('');
   console.log('[Cortex] Setup complete!');
