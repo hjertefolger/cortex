@@ -5,7 +5,7 @@
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
 import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, markWarningThresholdReached, type ConfigPreset } from './config.js';
-import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector } from './database.js';
+import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
 import { archiveSession, formatArchiveResult, buildRestorationContext, formatRestorationContext } from './archive.js';
@@ -91,6 +91,10 @@ async function main() {
 
       case 'test-embed':
         await handleTestEmbed(args[1] || 'hello world');
+        break;
+
+      case 'check-db':
+        await handleCheckDb();
         break;
 
       default:
@@ -715,6 +719,99 @@ async function handleTestEmbed(text: string) {
   }
 }
 
+async function handleCheckDb() {
+  console.log('[Cortex] Database Integrity Check');
+  console.log('================================');
+
+  let hasErrors = false;
+
+  try {
+    const db = await initDb();
+    const validation = validateDatabase(db);
+
+    // Schema validation
+    console.log('');
+    console.log('Schema Validation:');
+    if (validation.tablesFound.length > 0) {
+      console.log(`  Tables found: ${validation.tablesFound.join(', ')}`);
+    }
+    if (validation.errors.length === 0) {
+      console.log(`  ${ANSI.green}✓${ANSI.reset} All required tables present`);
+    } else {
+      for (const error of validation.errors) {
+        console.log(`  ${ANSI.red}✗${ANSI.reset} ${error}`);
+        hasErrors = true;
+      }
+    }
+
+    // SQLite integrity check
+    console.log('');
+    console.log('SQLite Integrity:');
+    if (validation.integrityCheck) {
+      console.log(`  ${ANSI.green}✓${ANSI.reset} PRAGMA integrity_check passed`);
+    } else {
+      console.log(`  ${ANSI.red}✗${ANSI.reset} Integrity check failed`);
+      hasErrors = true;
+    }
+
+    // FTS5 availability
+    console.log('');
+    console.log('FTS5 Full-Text Search:');
+    if (validation.fts5Available) {
+      console.log(`  ${ANSI.green}✓${ANSI.reset} FTS5 table available`);
+    } else {
+      console.log(`  ${ANSI.yellow}⚠${ANSI.reset} FTS5 not available (using LIKE fallback)`);
+    }
+
+    // Embedding dimension check
+    console.log('');
+    console.log('Embeddings:');
+    if (validation.embeddingDimension !== null) {
+      if (validation.embeddingDimension === 768) {
+        console.log(`  ${ANSI.green}✓${ANSI.reset} Embedding dimension: ${validation.embeddingDimension} (expected)`);
+      } else {
+        console.log(`  ${ANSI.yellow}⚠${ANSI.reset} Embedding dimension: ${validation.embeddingDimension} (expected 768)`);
+      }
+    } else {
+      console.log(`  ${ANSI.dim}No embeddings stored yet${ANSI.reset}`);
+    }
+
+    // Backup status
+    console.log('');
+    console.log('Backups:');
+    const backups = getBackupFiles();
+    if (backups.length > 0) {
+      console.log(`  ${ANSI.green}✓${ANSI.reset} ${backups.length} backup(s) available`);
+    } else {
+      console.log(`  ${ANSI.yellow}⚠${ANSI.reset} No backups found`);
+    }
+
+    // Warnings
+    if (validation.warnings.length > 0) {
+      console.log('');
+      console.log('Warnings:');
+      for (const warning of validation.warnings) {
+        console.log(`  ${ANSI.yellow}⚠${ANSI.reset} ${warning}`);
+      }
+    }
+
+    // Summary
+    console.log('');
+    console.log('--------------------------------');
+    if (hasErrors) {
+      console.log(`${ANSI.red}Database has errors. Consider restoring from backup.${ANSI.reset}`);
+      process.exit(1);
+    } else if (validation.warnings.length > 0) {
+      console.log(`${ANSI.yellow}Database is functional with ${validation.warnings.length} warning(s).${ANSI.reset}`);
+    } else {
+      console.log(`${ANSI.green}Database is healthy.${ANSI.reset}`);
+    }
+  } catch (error) {
+    console.log(`${ANSI.red}✗ Failed to check database: ${error instanceof Error ? error.message : String(error)}${ANSI.reset}`);
+    process.exit(1);
+  }
+}
+
 // ============================================================================
 // Exports for testing
 // ============================================================================
@@ -732,6 +829,7 @@ export {
   handleStats,
   handleSetup,
   handleConfigure,
+  handleCheckDb,
 };
 
 // Run main

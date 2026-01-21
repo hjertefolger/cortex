@@ -10,7 +10,7 @@ import type { Database as SqlJsDatabase } from 'sql.js';
 import { insertMemory, contentExists, saveDb, insertTurn, clearProjectTurns, getRecentTurns, upsertSessionSummary } from './database.js';
 import { embedBatch } from './embeddings.js';
 import { loadConfig } from './config.js';
-import type { ArchiveResult, TranscriptMessage } from './types.js';
+import type { ArchiveResult, TranscriptMessage, ParseResult } from './types.js';
 
 // ============================================================================
 // Configuration - Optimized for Nomic Embed v1.5
@@ -77,15 +77,25 @@ const VALUABLE_PATTERNS = [
 
 /**
  * Parse a JSONL transcript file
+ * Returns messages with parsing statistics
  */
 export async function parseTranscript(
   transcriptPath: string
-): Promise<TranscriptMessage[]> {
-  if (!fs.existsSync(transcriptPath)) {
-    return [];
-  }
+): Promise<ParseResult> {
+  const result: ParseResult = {
+    messages: [],
+    stats: {
+      totalLines: 0,
+      parsedLines: 0,
+      skippedLines: 0,
+      emptyLines: 0,
+      parseErrors: 0,
+    },
+  };
 
-  const messages: TranscriptMessage[] = [];
+  if (!fs.existsSync(transcriptPath)) {
+    return result;
+  }
 
   const fileStream = fs.createReadStream(transcriptPath);
   const rl = readline.createInterface({
@@ -94,7 +104,12 @@ export async function parseTranscript(
   });
 
   for await (const line of rl) {
-    if (!line.trim()) continue;
+    result.stats.totalLines++;
+
+    if (!line.trim()) {
+      result.stats.emptyLines++;
+      continue;
+    }
 
     try {
       const parsed = JSON.parse(line);
@@ -104,30 +119,39 @@ export async function parseTranscript(
         // Direct message format
         const content = extractTextContent(parsed.content);
         if (content) {
-          messages.push({
+          result.messages.push({
             role: parsed.role,
             content,
             timestamp: parsed.timestamp,
           });
+          result.stats.parsedLines++;
+        } else {
+          result.stats.skippedLines++;
         }
       } else if ((parsed.type === 'message' || parsed.type === 'user' || parsed.type === 'assistant') && parsed.message) {
         // Wrapped message format (Claude Code uses type: 'user' or 'assistant')
         const content = extractTextContent(parsed.message.content);
         if (content) {
-          messages.push({
+          result.messages.push({
             role: parsed.message.role,
             content,
             timestamp: parsed.timestamp,
           });
+          result.stats.parsedLines++;
+        } else {
+          result.stats.skippedLines++;
         }
+      } else {
+        // Line parsed but not a message format we recognize
+        result.stats.skippedLines++;
       }
     } catch {
-      // Skip malformed lines
-      continue;
+      // Malformed JSON
+      result.stats.parseErrors++;
     }
   }
 
-  return messages;
+  return result;
 }
 
 /**
@@ -414,7 +438,7 @@ export async function saveSessionTurns(
   projectId: string | null,
   maxTurns: number = 6
 ): Promise<number> {
-  const messages = await parseTranscript(transcriptPath);
+  const { messages } = await parseTranscript(transcriptPath);
 
   // Get session ID from transcript path
   const sessionId = getSessionId(transcriptPath);
@@ -473,10 +497,15 @@ export async function archiveSession(
   };
 
   // Parse transcript
-  const messages = await parseTranscript(transcriptPath);
+  const { messages, stats: parseStats } = await parseTranscript(transcriptPath);
 
   if (messages.length === 0) {
     return result;
+  }
+
+  // Log parse stats if there were errors
+  if (parseStats.parseErrors > 0) {
+    console.error(`[Cortex] Warning: ${parseStats.parseErrors} lines failed to parse in transcript`);
   }
 
   // Extract and filter content from BOTH user and assistant messages

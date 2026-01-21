@@ -7,6 +7,19 @@
 // Matches Claude Code's actual JSON structure
 // ============================================================================
 
+/**
+ * Discriminated union for stdin read results with error context
+ */
+export type StdinReadResult =
+  | { success: true; data: StdinData }
+  | { success: false; data: null; error: StdinReadError };
+
+export interface StdinReadError {
+  type: 'empty' | 'parse_error' | 'read_error' | 'tty';
+  message: string;
+  raw?: string;
+}
+
 export interface StdinData {
   transcript_path?: string;
   cwd?: string;
@@ -146,6 +159,20 @@ export interface TranscriptMessage {
   timestamp?: string;
 }
 
+/**
+ * Result of parsing a transcript file with statistics
+ */
+export interface ParseResult {
+  messages: TranscriptMessage[];
+  stats: {
+    totalLines: number;
+    parsedLines: number;
+    skippedLines: number;
+    emptyLines: number;
+    parseErrors: number;
+  };
+}
+
 // ============================================================================
 // Session Turn Types (for precise restoration after /clear)
 // ============================================================================
@@ -188,7 +215,8 @@ export type CommandName =
   | 'stats'
   | 'configure'
   | 'setup'
-  | 'test-embed';
+  | 'test-embed'
+  | 'check-db';
 
 // ============================================================================
 // Analytics Types

@@ -5,34 +5,74 @@
  * Follows claude-hud's production pattern for reliable stdin parsing
  */
 
-import type { StdinData } from './types.js';
+import type { StdinData, StdinReadResult } from './types.js';
 
 /**
- * Read and parse stdin data from Claude Code
+ * Read and parse stdin data from Claude Code with full error context
  * Uses async iterator pattern for reliable streaming
- * Returns null if no data available or parsing fails
+ * Returns discriminated union with success/error status
  */
-export async function readStdin(): Promise<StdinData | null> {
+export async function readStdinWithResult(): Promise<StdinReadResult> {
   // Check if stdin is a TTY (interactive terminal) - no data to read
   if (process.stdin.isTTY) {
-    return null;
+    return {
+      success: false,
+      data: null,
+      error: {
+        type: 'tty',
+        message: 'stdin is a TTY (interactive terminal)',
+      },
+    };
   }
 
   const chunks: string[] = [];
+  let raw = '';
 
   try {
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) {
       chunks.push(chunk as string);
     }
-    const raw = chunks.join('');
+    raw = chunks.join('');
+
     if (!raw.trim()) {
-      return null;
+      return {
+        success: false,
+        data: null,
+        error: {
+          type: 'empty',
+          message: 'stdin was empty or whitespace only',
+        },
+      };
     }
-    return JSON.parse(raw) as StdinData;
-  } catch {
-    return null;
+
+    const data = JSON.parse(raw) as StdinData;
+    return {
+      success: true,
+      data,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      data: null,
+      error: {
+        type: 'parse_error',
+        message: error instanceof Error ? error.message : String(error),
+        raw: raw.length < 500 ? raw : raw.substring(0, 500) + '...',
+      },
+    };
   }
+}
+
+/**
+ * Read and parse stdin data from Claude Code
+ * Uses async iterator pattern for reliable streaming
+ * Returns null if no data available or parsing fails
+ * @deprecated Use readStdinWithResult() for error context
+ */
+export async function readStdin(): Promise<StdinData | null> {
+  const result = await readStdinWithResult();
+  return result.success ? result.data : null;
 }
 
 /**

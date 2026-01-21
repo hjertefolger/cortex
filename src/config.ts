@@ -6,7 +6,52 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { z } from 'zod';
 import type { Config, StatuslineConfig, ArchiveConfig, MonitorConfig, AutomationConfig, SetupConfig } from './types.js';
+
+// ============================================================================
+// Zod Schemas for Config Validation
+// ============================================================================
+
+const StatuslineConfigSchema = z.object({
+  enabled: z.boolean(),
+  showFragments: z.boolean(),
+  showLastArchive: z.boolean(),
+  showContext: z.boolean(),
+  contextWarningThreshold: z.number().min(0).max(100),
+});
+
+const ArchiveConfigSchema = z.object({
+  autoOnCompact: z.boolean(),
+  projectScope: z.boolean(),
+  minContentLength: z.number().min(0).max(10000),
+});
+
+const MonitorConfigSchema = z.object({
+  tokenThreshold: z.number().min(0).max(100),
+});
+
+const AutomationConfigSchema = z.object({
+  autoSaveThreshold: z.number().min(0).max(100),
+  autoClearThreshold: z.number().min(0).max(100),
+  autoClearEnabled: z.boolean(),
+  restorationTokenBudget: z.number().min(0).max(50000),
+  restorationMessageCount: z.number().min(0).max(50),
+  restorationTurnCount: z.number().min(0).max(50),
+});
+
+const SetupConfigSchema = z.object({
+  completed: z.boolean(),
+  completedAt: z.string().nullable(),
+});
+
+const ConfigSchema = z.object({
+  statusline: StatuslineConfigSchema,
+  archive: ArchiveConfigSchema,
+  monitor: MonitorConfigSchema,
+  automation: AutomationConfigSchema,
+  setup: SetupConfigSchema,
+});
 
 // ============================================================================
 // Default Configuration
@@ -79,6 +124,23 @@ export function getDatabasePath(): string {
 }
 
 /**
+ * Get the backups directory path
+ */
+export function getBackupsDir(): string {
+  return path.join(getDataDir(), 'backups');
+}
+
+/**
+ * Ensure the backups directory exists
+ */
+export function ensureBackupsDir(): void {
+  const dir = getBackupsDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+/**
  * Ensure the data directory exists
  */
 export function ensureDataDir(): void {
@@ -121,6 +183,7 @@ function deepMerge<T extends object>(target: T, source: Partial<T>): T {
 
 /**
  * Load configuration from disk, merging with defaults
+ * Validates with Zod schema, falling back to defaults on validation error
  */
 export function loadConfig(): Config {
   const configPath = getConfigPath();
@@ -132,7 +195,19 @@ export function loadConfig(): Config {
   try {
     const content = fs.readFileSync(configPath, 'utf8');
     const loaded = JSON.parse(content);
-    return deepMerge(DEFAULT_CONFIG, loaded);
+    const merged = deepMerge(DEFAULT_CONFIG, loaded);
+
+    // Validate with Zod schema
+    const result = ConfigSchema.safeParse(merged);
+    if (!result.success) {
+      // Log validation errors but continue with defaults
+      const errors = result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`);
+      console.error(`[Cortex] Config validation errors:\n  ${errors.join('\n  ')}`);
+      console.error('[Cortex] Using default configuration');
+      return DEFAULT_CONFIG;
+    }
+
+    return result.data;
   } catch {
     // Return defaults if loading fails
     return DEFAULT_CONFIG;
@@ -140,12 +215,34 @@ export function loadConfig(): Config {
 }
 
 /**
- * Save configuration to disk
+ * Atomic file write helper
+ * Uses temp-file + rename to prevent corruption on crash
+ */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tempPath, content, 'utf8');
+    fs.renameSync(tempPath, filePath);  // Atomic on POSIX
+  } catch (error) {
+    // Clean up temp file if rename failed
+    try {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw error;
+  }
+}
+
+/**
+ * Save configuration to disk using atomic write pattern
  */
 export function saveConfig(config: Config): void {
   ensureDataDir();
   const configPath = getConfigPath();
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
 /**
@@ -297,11 +394,11 @@ function loadSessions(): SessionsStore {
 }
 
 /**
- * Save all sessions
+ * Save all sessions using atomic write pattern
  */
 function saveSessions(sessions: SessionsStore): void {
   ensureDataDir();
-  fs.writeFileSync(getSessionsPath(), JSON.stringify(sessions, null, 2), 'utf8');
+  atomicWriteFileSync(getSessionsPath(), JSON.stringify(sessions, null, 2));
 }
 
 /**
@@ -398,11 +495,11 @@ export function loadAutoSaveState(): AutoSaveState {
 }
 
 /**
- * Save auto-save state to disk
+ * Save auto-save state to disk using atomic write pattern
  */
 export function saveAutoSaveState(state: AutoSaveState): void {
   ensureDataDir();
-  fs.writeFileSync(getAutoSaveStatePath(), JSON.stringify(state, null, 2), 'utf8');
+  atomicWriteFileSync(getAutoSaveStatePath(), JSON.stringify(state, null, 2));
 }
 
 /**
@@ -436,11 +533,14 @@ export function shouldAutoSave(currentContext: number, transcriptPath: string | 
  * Mark that we've auto-saved for this session
  */
 export function markAutoSaved(transcriptPath: string | null, contextPercent: number): void {
+  const currentState = loadAutoSaveState();
   const state: AutoSaveState = {
     lastAutoSaveTimestamp: new Date().toISOString(),
     lastAutoSaveContext: contextPercent,
     transcriptPath,
     hasSavedThisSession: true,
+    hasReachedWarningThreshold: currentState.hasReachedWarningThreshold,
+    warningContextPercent: currentState.warningContextPercent,
   };
   saveAutoSaveState(state);
 }

@@ -1,137 +1,172 @@
-# Cortex v2.0
+# Cortex
 
-Persistent local memory for Claude Code. Longer sessions. Cross-session recall. Zero cloud.
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](package.json)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![Tests](https://img.shields.io/badge/tests-187%20passing-success.svg)](#testing)
+[![TypeScript](https://img.shields.io/badge/typescript-strict-blue.svg)](tsconfig.json)
 
-**Pure TypeScript - no Python dependencies required.**
+**Persistent local memory for Claude Code.** Longer sessions. Cross-session recall. Zero cloud.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  [Cortex] 47 memories │ my-project │ 45% ctx │ Last: 2m ago    │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Why Cortex?
 
-| Problem | Solution |
-|---------|----------|
-| Session limits hit mid-task | Proactive warnings + auto-archive before threshold |
-| `/clear` wipes everything | Memory survives in local SQLite |
-| Re-explaining every session | `/cortex:recall` brings back context |
-| Cloud memory concerns | SQLite file you own, backup, delete |
+| Problem | Cortex Solution |
+|---------|-----------------|
+| Session limits hit mid-task | Auto-save at configurable thresholds (default 70%) |
+| `/clear` wipes everything | SQLite persistence survives clears |
+| Re-explaining context every session | Hybrid search recalls relevant memories |
+| Cloud memory privacy concerns | 100% local — `~/.cortex/memory.db` |
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/hjertefolger/cortex.git
 cd cortex
-npm install
-npm run build
-```
-
-Add the plugin to Claude Code:
-```bash
+npm install && npm run build
 claude plugin add ./cortex
 ```
 
-Then in Claude Code:
+Then run the setup wizard:
 ```
 /cortex:setup
 ```
 
+## Architecture
+
+```
+                           ┌──────────────────────────────────────┐
+                           │           Claude Code                │
+                           └──────────────┬───────────────────────┘
+                                          │ stdin (JSON)
+                           ┌──────────────▼───────────────────────┐
+                           │         Command Router               │
+                           │         (src/index.ts)               │
+                           └──────────────┬───────────────────────┘
+                                          │
+              ┌───────────────────────────┼───────────────────────────┐
+              │                           │                           │
+   ┌──────────▼──────────┐    ┌──────────▼──────────┐    ┌──────────▼──────────┐
+   │     Database        │    │     Embeddings      │    │      Search         │
+   │   (sql.js/WASM)     │    │  (Nomic Embed v1.5) │    │  (Vector + FTS5)    │
+   │   + FTS5 + Backup   │    │     768 dims        │    │    + RRF Fusion     │
+   └──────────┬──────────┘    └──────────┬──────────┘    └──────────┬──────────┘
+              │                           │                           │
+              └───────────────────────────┼───────────────────────────┘
+                                          │
+                           ┌──────────────▼───────────────────────┐
+                           │      ~/.cortex/memory.db             │
+                           │      (SQLite + Embeddings)           │
+                           └──────────────────────────────────────┘
+```
+
+### Module Overview
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `index.ts` | 836 | Command router, hooks, statusline |
+| `mcp-server.ts` | 750 | MCP protocol, 8 tools exposed |
+| `database.ts` | 1143 | SQLite, FTS5, backups, recovery |
+| `archive.ts` | 873 | Transcript parsing, chunking |
+| `embeddings.ts` | 337 | Nomic Embed v1.5, quantization |
+| `search.ts` | 308 | Hybrid search, RRF fusion |
+| `config.ts` | 563 | Zod validation, presets |
+| `analytics.ts` | 288 | Session tracking, insights |
+
+**Total: ~5,700 lines TypeScript**
+
+## Search Algorithm
+
+Cortex uses a hybrid search combining three signals:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Query: "auth flow"                       │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+         ┌────────────────┼────────────────┐
+         ▼                ▼                ▼
+   ┌──────────┐    ┌──────────┐    ┌──────────┐
+   │  Vector  │    │  FTS5    │    │ Recency  │
+   │  Search  │    │ Keyword  │    │  Decay   │
+   │  (60%)   │    │  (40%)   │    │ (7-day)  │
+   └────┬─────┘    └────┬─────┘    └────┬─────┘
+        │               │               │
+        └───────────────┼───────────────┘
+                        ▼
+              ┌──────────────────┐
+              │   RRF Fusion     │
+              │    (k=60)        │
+              └────────┬─────────┘
+                       ▼
+              ┌──────────────────┐
+              │  Ranked Results  │
+              └──────────────────┘
+```
+
+- **Vector similarity**: Cosine distance on 768-dim embeddings
+- **FTS5 keyword**: BM25 ranking with sqlite full-text search
+- **RRF fusion**: `1/(k + rank)` aggregation across both lists
+- **Recency decay**: 7-day half-life weights recent memories higher
+
 ## Commands
+
+### User-Invocable Skills
 
 | Command | Purpose |
 |---------|---------|
-| `/cortex:save` | Archive current session context |
-| `/cortex:recall` | Search past memories |
-| `/cortex:stats` | View memory statistics |
-| `/cortex:configure` | Adjust settings |
-| `/cortex:manage` | Delete/manage memories |
+| `/cortex:setup` | First-time initialization wizard |
+| `/cortex:save` | Archive current session to memory |
+| `/cortex:recall <query>` | Search memories with hybrid search |
+| `/cortex:stats` | Display memory statistics |
+| `/cortex:configure <preset>` | Apply configuration preset |
+| `/cortex:manage` | Delete or manage memories |
 
-## MCP Tools
+### MCP Tools (Claude-invocable)
 
-Claude can use these tools directly during conversation:
+| Tool | Purpose | Side Effects |
+|------|---------|--------------|
+| `cortex_recall` | Search memory | Read-only |
+| `cortex_remember` | Save specific insight | Creates memory |
+| `cortex_save` | Archive full session | Creates memories |
+| `cortex_stats` | Get statistics | Read-only |
+| `cortex_restore` | Get restoration context | Read-only |
+| `cortex_analytics` | Usage insights | Read-only |
+| `cortex_delete` | Delete memory | **Destructive** |
+| `cortex_forget_project` | Delete project memories | **Destructive** |
 
-| Tool | Purpose |
-|------|---------|
-| `cortex_recall` | Search memory for relevant context |
-| `cortex_remember` | Save a specific insight, decision, or fact |
-| `cortex_save` | Archive entire session |
-| `cortex_stats` | Get memory statistics |
-| `cortex_restore` | Get restoration context after clear |
-| `cortex_analytics` | View usage analytics |
-| `cortex_delete` | Delete specific memory (requires confirmation) |
-| `cortex_forget_project` | Delete all project memories (requires confirmation) |
-
-### Key Distinction
-
-- **`cortex_remember`**: Save specific facts during conversation (granular)
-- **`cortex_save`**: Archive entire session transcript (bulk)
-
-## How It Works
-
-### Technology Stack
-
-- **SQLite (sql.js)**: Pure JS database via WebAssembly
-- **@xenova/transformers**: Quantized ONNX embeddings (BGE-small-en-v1.5, ~33MB)
-- **Hybrid Search**: Vector similarity + FTS5 keyword matching + RRF fusion
-- **Recency Decay**: 7-day half-life for time weighting
-
-### Search Algorithm
-
-1. Query embedding compared to stored embeddings (cosine similarity)
-2. FTS5 full-text search on content
-3. Reciprocal Rank Fusion (k=60) to combine results
-4. Recency decay applied
-5. Top results returned with scores
-
-### Data Flow
+#### `cortex_remember` vs `cortex_save`
 
 ```
-Claude Code → stdin JSON → command router → handler → stdout
-                                ↓
-                       SQLite + Embeddings
-                                ↓
-                      ~/.cortex/memory.db
+cortex_remember("JWT refresh tokens must use httpOnly cookies")
+  → Creates ONE memory fragment from the string
 
-MCP Client → JSON-RPC → mcp-server.js → tools → database
+cortex_save()
+  → Parses transcript, extracts HIGH-VALUE content, creates MULTIPLE fragments
 ```
 
-## Features
+## Hooks
 
-### Statusline
-
-Real-time memory stats in your Claude Code statusline:
-```
-[Cortex] 47 frags | my-project | Last: 2m ago
-```
-
-### Auto-Archive
-
-Automatically archives context when thresholds are reached:
-- `autoSaveThreshold`: When to auto-save (default: 70%)
-- `autoClearThreshold`: When to auto-clear (default: 80%)
-- `autoClearEnabled`: Toggle auto-clear (default: false)
-
-### Smart Compaction
-
-Before context compaction:
-1. Saves current session to memory
-2. Generates restoration context
-3. Restores continuity after clear
-
-### Configuration Presets
-
-```
-/cortex:configure full       # All features enabled
-/cortex:configure essential  # Statusline + auto-archive
-/cortex:configure minimal    # Commands only
-```
+| Hook | Trigger | Behavior |
+|------|---------|----------|
+| `SessionStart` | New session | Shows memory count, injects restoration context |
+| `PostToolUse` | After any tool | Monitors context %, triggers auto-save |
+| `PreCompact` | Before `/clear` | Archives session, prepares restoration |
 
 ## Configuration
 
-Config file: `~/.cortex/config.json`
+**Location:** `~/.cortex/config.json`
 
 ```json
 {
   "statusline": {
     "enabled": true,
     "showFragments": true,
-    "showLastArchive": true,
     "showContext": true,
     "contextWarningThreshold": 70
   },
@@ -150,72 +185,188 @@ Config file: `~/.cortex/config.json`
 }
 ```
 
-## Architecture
+### Presets
 
-```
-cortex/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin metadata
-├── .mcp.json                 # MCP server configuration
-├── skills/                   # User-invocable commands
-│   ├── cortex-setup/
-│   ├── cortex-configure/
-│   ├── cortex-stats/
-│   ├── cortex-recall/
-│   ├── cortex-save/
-│   └── cortex-manage/
-├── hooks/
-│   └── hooks.json            # SessionStart, PostToolUse, PreCompact
-├── src/                      # TypeScript source
-│   ├── index.ts              # Command router
-│   ├── mcp-server.ts         # MCP server
-│   ├── database.ts           # SQLite + FTS5
-│   ├── embeddings.ts         # BGE model
-│   ├── search.ts             # Hybrid search
-│   ├── archive.ts            # Transcript parsing
-│   ├── config.ts             # Configuration
-│   └── analytics.ts          # Usage tracking
-├── dist/
-│   ├── index.js              # Compiled entry point
-│   ├── mcp-server.js         # MCP server
-│   └── sql-wasm.wasm         # SQLite WebAssembly
-└── package.json
+```bash
+/cortex:configure full       # All features (statusline, auto-archive, warnings)
+/cortex:configure essential  # Statusline + auto-archive only
+/cortex:configure minimal    # Commands only, no automation
 ```
 
-## Hooks
+### Key Settings
 
-| Hook | Trigger | Purpose |
-|------|---------|---------|
-| `SessionStart` | New session | Show memory count, start analytics |
-| `PostToolUse` | After any tool | Monitor context, auto-save/clear |
-| `PreCompact` | Before compaction | Save + restoration context |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `autoSaveThreshold` | 70 | Context % to trigger auto-save |
+| `autoClearThreshold` | 80 | Context % to suggest `/clear` |
+| `autoClearEnabled` | false | Auto-clear without prompting |
+| `restorationTokenBudget` | 1000 | Max tokens for restoration context |
+| `restorationMessageCount` | 5 | Recent messages to restore |
 
-## Requirements
+## Database Schema
 
-- Node.js 18+
-- Claude Code v2.0.12+
-- ~50MB disk space
+```sql
+CREATE TABLE memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  content_hash TEXT UNIQUE,        -- SHA256 for deduplication
+  embedding BLOB NOT NULL,         -- 768 × float32 = 3KB
+  project_id TEXT,                 -- NULL for global scope
+  source_session TEXT,
+  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
-## Data Location
+CREATE INDEX idx_memories_project_id ON memories(project_id);
+CREATE INDEX idx_memories_timestamp ON memories(timestamp);
+CREATE INDEX idx_memories_content_hash ON memories(content_hash);
 
-All data stored locally in `~/.cortex/`:
+-- Optional FTS5 (graceful fallback to LIKE if unavailable)
+CREATE VIRTUAL TABLE memories_fts USING fts5(content);
+```
 
-| File | Purpose |
-|------|---------|
-| `memory.db` | SQLite database with embeddings |
-| `config.json` | User configuration |
-| `analytics.json` | Session tracking data |
+### Backup Strategy
+
+- **Auto-backup**: Created on database open
+- **Rotation**: Keeps 5 most recent backups
+- **Recovery**: Tests each backup until one validates
+- **Atomic writes**: temp file + rename pattern
+
+## Data Storage
+
+```
+~/.cortex/
+├── memory.db              # SQLite database (~2-3MB per 1000 memories)
+├── memory.db.backup.*     # Rotated backups (max 5)
+├── config.json            # User configuration
+├── analytics.json         # Session tracking
+└── autoSaveState.json     # Transient state
+```
+
+## Testing
+
+```bash
+npm test
+```
+
+**187 tests** covering:
+- Database CRUD, deduplication, recovery
+- Vector and keyword search
+- RRF fusion scoring
+- Archive parsing and chunking
+- MCP tool handlers
+- Configuration validation
+
+```
+✔ Analytics Module (14 tests)
+✔ Archive Module (10 tests)
+✔ Config Module (5 tests)
+✔ Database Module (30+ tests)
+✔ Embeddings Module (8 tests)
+✔ Search Module (10+ tests)
+✔ Integration Tests (20+ tests)
+✔ MCP Tool Handlers (30+ tests)
+
+ℹ tests 187
+ℹ suites 12
+ℹ pass 187
+ℹ fail 0
+ℹ duration_ms 338
+```
 
 ## Development
 
 ```bash
 npm install            # Install dependencies
-npm run build          # Build everything
-npm run build:index    # Build main entry point
-npm run build:mcp      # Build MCP server
-npm run typecheck      # Type check without emitting
-npm test               # Run tests
+npm run build          # Build index.js + mcp-server.js + copy WASM
+npm run build:index    # Build main entry only
+npm run build:mcp      # Build MCP server only
+npm run typecheck      # TypeScript strict check
+npm test               # Run test suite
 ```
+
+### Build Output
+
+```
+dist/
+├── index.js           # 302KB - Main entry point
+├── mcp-server.js      # 277KB - MCP server
+└── sql-wasm.wasm      # 660KB - SQLite WebAssembly
+```
+
+### Testing Commands Manually
+
+```bash
+# Test stats command
+echo '{"cwd":"/tmp/test"}' | node dist/index.js stats
+
+# Test recall
+echo '{"cwd":"/tmp/test"}' | node dist/index.js recall "authentication"
+
+# Test MCP server
+echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | node dist/mcp-server.js
+```
+
+## Performance
+
+| Operation | Typical Latency |
+|-----------|-----------------|
+| Embedding generation | ~100ms |
+| Vector search (1000 memories) | ~50ms |
+| FTS5 keyword search | ~10ms |
+| Hybrid search (combined) | ~100ms |
+| Database insert | ~5ms + embedding |
+
+**Memory footprint**: ~50MB base (includes Nomic Embed model)
+
+## Requirements
+
+- **Node.js**: ≥18.0.0
+- **Claude Code**: ≥2.0.12
+- **Disk**: ~50MB for model + database
+
+## Error Handling
+
+Cortex implements defensive error handling:
+
+- **Database corruption**: Auto-recovery from rotated backups
+- **FTS5 unavailable**: Graceful fallback to LIKE queries
+- **Embedding failures**: Logged, operation continues
+- **Stdin parse errors**: Discriminated union with context
+- **Missing config**: Auto-created with defaults
+
+## Security
+
+- **Zero cloud**: All data local to `~/.cortex/`
+- **No telemetry**: No external network calls
+- **Plaintext storage**: Acceptable for local-only use
+- **Deduplication**: SHA256 hash prevents duplicates
+
+## Troubleshooting
+
+### Database integrity check
+```
+/cortex:check-db
+```
+
+### Reset to defaults
+```bash
+rm -rf ~/.cortex
+/cortex:setup
+```
+
+### View raw database
+```bash
+sqlite3 ~/.cortex/memory.db "SELECT id, substr(content, 1, 50), timestamp FROM memories ORDER BY timestamp DESC LIMIT 10;"
+```
+
+### Check embedding model
+```bash
+ls -la ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5/
+```
+
+## License
+
+MIT
 
 ## Author
 
@@ -223,6 +374,8 @@ npm test               # Run tests
 - Website: [rootdeveloper.dev](https://rootdeveloper.dev)
 - Email: support@rootdeveloper.dev
 
-## License
+---
 
-MIT
+<p align="center">
+  <i>Built for developers who value their context.</i>
+</p>

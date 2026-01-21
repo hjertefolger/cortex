@@ -6,7 +6,8 @@
 
 import * as fs from 'fs';
 import initSqlJs, { Database as SqlJsDatabase, SqlValue } from 'sql.js';
-import { getDatabasePath, ensureDataDir } from './config.js';
+import { getDatabasePath, ensureDataDir, getBackupsDir, ensureBackupsDir } from './config.js';
+import * as path from 'path';
 import type { Memory, MemoryInput, DbStats, SessionTurn, TurnInput } from './types.js';
 import * as crypto from 'crypto';
 
@@ -17,41 +18,305 @@ import * as crypto from 'crypto';
 let dbInstance: SqlJsDatabase | null = null;
 let SQL: initSqlJs.SqlJsStatic | null = null;
 let fts5Available = false;
+let initPromise: Promise<SqlJsDatabase> | null = null;
 
 /**
  * Initialize sql.js and load or create database
+ * Uses promise-based mutex to prevent concurrent initialization
  */
 export async function initDb(): Promise<SqlJsDatabase> {
   if (dbInstance) {
     return dbInstance;
   }
 
-  // Initialize sql.js
-  if (!SQL) {
-    SQL = await initSqlJs();
+  // Wait for in-progress initialization
+  if (initPromise) {
+    return initPromise;
   }
 
-  ensureDataDir();
+  initPromise = (async () => {
+    try {
+      // Initialize sql.js
+      if (!SQL) {
+        SQL = await initSqlJs();
+      }
+
+      ensureDataDir();
+      const dbPath = getDatabasePath();
+
+      // Create backup before loading existing database
+      createBackupOnStartup();
+
+      // Load existing database or create new one
+      if (fs.existsSync(dbPath)) {
+        let loadedDb: SqlJsDatabase | null = null;
+        let needsRecovery = false;
+
+        try {
+          const buffer = fs.readFileSync(dbPath);
+          loadedDb = new SQL.Database(buffer);
+
+          // Validate the database
+          const validation = validateDatabase(loadedDb);
+          if (!validation.valid) {
+            needsRecovery = true;
+            loadedDb.close();
+            loadedDb = null;
+          }
+        } catch {
+          needsRecovery = true;
+        }
+
+        // Attempt recovery from backups if needed
+        if (needsRecovery) {
+          loadedDb = attemptRecovery();
+          if (loadedDb) {
+            // Save recovered database to main path
+            const data = loadedDb.export();
+            const tempPath = `${dbPath}.tmp.${process.pid}.${Date.now()}`;
+            fs.writeFileSync(tempPath, Buffer.from(data));
+            fs.renameSync(tempPath, dbPath);
+          }
+        }
+
+        if (loadedDb) {
+          dbInstance = loadedDb;
+          // Check if FTS5 table exists
+          try {
+            dbInstance.exec(`SELECT 1 FROM memories_fts LIMIT 1`);
+            fts5Available = true;
+          } catch {
+            fts5Available = false;
+          }
+        } else {
+          // All recovery attempts failed, create fresh database
+          dbInstance = new SQL.Database();
+          createSchema(dbInstance);
+        }
+      } else {
+        dbInstance = new SQL.Database();
+        createSchema(dbInstance);
+      }
+
+      return dbInstance;
+    } catch (error) {
+      initPromise = null;  // Allow retry on failure
+      throw error;
+    }
+  })();
+
+  return initPromise;
+}
+
+// ============================================================================
+// Database Backup & Recovery
+// ============================================================================
+
+const MAX_BACKUPS = 5;
+
+/**
+ * Create a backup of the database before loading
+ * Only creates backup if the database file exists and has content
+ */
+function createBackupOnStartup(): void {
   const dbPath = getDatabasePath();
 
-  // Load existing database or create new one
-  if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    dbInstance = new SQL.Database(buffer);
-    // Check if FTS5 table exists
-    try {
-      dbInstance.exec(`SELECT 1 FROM memories_fts LIMIT 1`);
-      fts5Available = true;
-    } catch {
-      fts5Available = false;
-    }
-  } else {
-    dbInstance = new SQL.Database();
-    createSchema(dbInstance);
+  if (!fs.existsSync(dbPath)) {
+    return;
   }
 
-  return dbInstance;
+  const stats = fs.statSync(dbPath);
+  if (stats.size === 0) {
+    return;
+  }
+
+  ensureBackupsDir();
+  const backupsDir = getBackupsDir();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupsDir, `memory.db.backup.${timestamp}`);
+
+  try {
+    fs.copyFileSync(dbPath, backupPath);
+    rotateBackups();
+  } catch {
+    // Backup failures are non-fatal
+  }
 }
+
+/**
+ * Rotate backups, keeping only the most recent MAX_BACKUPS
+ */
+function rotateBackups(): void {
+  const backupsDir = getBackupsDir();
+
+  if (!fs.existsSync(backupsDir)) {
+    return;
+  }
+
+  const files = fs.readdirSync(backupsDir)
+    .filter(f => f.startsWith('memory.db.backup.'))
+    .map(f => ({
+      name: f,
+      path: path.join(backupsDir, f),
+      mtime: fs.statSync(path.join(backupsDir, f)).mtime.getTime(),
+    }))
+    .sort((a, b) => b.mtime - a.mtime);  // Newest first
+
+  // Remove old backups
+  for (let i = MAX_BACKUPS; i < files.length; i++) {
+    try {
+      fs.unlinkSync(files[i].path);
+    } catch {
+      // Ignore deletion errors
+    }
+  }
+}
+
+/**
+ * Get list of available backup files, sorted by date (newest first)
+ */
+export function getBackupFiles(): string[] {
+  const backupsDir = getBackupsDir();
+
+  if (!fs.existsSync(backupsDir)) {
+    return [];
+  }
+
+  return fs.readdirSync(backupsDir)
+    .filter(f => f.startsWith('memory.db.backup.'))
+    .map(f => path.join(backupsDir, f))
+    .sort((a, b) => {
+      const aTime = fs.statSync(a).mtime.getTime();
+      const bTime = fs.statSync(b).mtime.getTime();
+      return bTime - aTime;  // Newest first
+    });
+}
+
+/**
+ * Database validation result
+ */
+export interface DatabaseValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  tablesFound: string[];
+  integrityCheck: boolean;
+  fts5Available: boolean;
+  embeddingDimension: number | null;
+}
+
+/**
+ * Validate database structure and integrity
+ */
+export function validateDatabase(db: SqlJsDatabase): DatabaseValidationResult {
+  const result: DatabaseValidationResult = {
+    valid: true,
+    errors: [],
+    warnings: [],
+    tablesFound: [],
+    integrityCheck: false,
+    fts5Available: false,
+    embeddingDimension: null,
+  };
+
+  // Check required tables
+  const requiredTables = ['memories', 'session_turns', 'session_summaries'];
+  try {
+    const tablesResult = db.exec(`SELECT name FROM sqlite_master WHERE type='table'`);
+    if (tablesResult.length > 0) {
+      result.tablesFound = tablesResult[0].values.map(row => row[0] as string);
+    }
+
+    for (const table of requiredTables) {
+      if (!result.tablesFound.includes(table)) {
+        result.errors.push(`Missing required table: ${table}`);
+        result.valid = false;
+      }
+    }
+  } catch (error) {
+    result.errors.push(`Failed to query tables: ${error instanceof Error ? error.message : String(error)}`);
+    result.valid = false;
+  }
+
+  // Run SQLite integrity check
+  try {
+    const integrityResult = db.exec(`PRAGMA integrity_check`);
+    if (integrityResult.length > 0 && integrityResult[0].values.length > 0) {
+      const status = integrityResult[0].values[0][0] as string;
+      result.integrityCheck = status === 'ok';
+      if (!result.integrityCheck) {
+        result.errors.push(`Integrity check failed: ${status}`);
+        result.valid = false;
+      }
+    }
+  } catch (error) {
+    result.errors.push(`Integrity check error: ${error instanceof Error ? error.message : String(error)}`);
+    result.valid = false;
+  }
+
+  // Check FTS5 availability
+  try {
+    db.exec(`SELECT 1 FROM memories_fts LIMIT 1`);
+    result.fts5Available = true;
+  } catch {
+    result.fts5Available = false;
+    result.warnings.push('FTS5 table not available - keyword search will use fallback');
+  }
+
+  // Check embedding dimension
+  try {
+    const embeddingResult = db.exec(`SELECT embedding FROM memories LIMIT 1`);
+    if (embeddingResult.length > 0 && embeddingResult[0].values.length > 0) {
+      const embeddingBlob = embeddingResult[0].values[0][0] as Buffer;
+      if (embeddingBlob) {
+        result.embeddingDimension = embeddingBlob.length / 4;  // Float32 = 4 bytes
+        if (result.embeddingDimension !== 768) {
+          result.warnings.push(`Embedding dimension is ${result.embeddingDimension}, expected 768`);
+        }
+      }
+    }
+  } catch {
+    // No embeddings yet is fine
+  }
+
+  return result;
+}
+
+/**
+ * Attempt to recover database from backups
+ * Returns the first valid database or null if all backups are corrupt
+ */
+function attemptRecovery(): SqlJsDatabase | null {
+  if (!SQL) {
+    return null;
+  }
+
+  const backups = getBackupFiles();
+
+  for (const backupPath of backups) {
+    try {
+      const buffer = fs.readFileSync(backupPath);
+      const db = new SQL.Database(buffer);
+
+      // Validate the backup
+      const validation = validateDatabase(db);
+      if (validation.valid) {
+        return db;
+      }
+
+      // Invalid backup, close and try next
+      db.close();
+    } catch {
+      // Corrupt backup, try next
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// FTS5 Support
+// ============================================================================
 
 /**
  * Check if FTS5 is available
@@ -166,12 +431,30 @@ function createSchema(db: SqlJsDatabase): void {
 }
 
 /**
- * Save database to disk
+ * Save database to disk using atomic write pattern
+ * Uses temp-file + rename to prevent corruption on crash
  */
 export function saveDb(db: SqlJsDatabase): void {
   const data = db.export();
   const buffer = Buffer.from(data);
-  fs.writeFileSync(getDatabasePath(), buffer);
+  const dbPath = getDatabasePath();
+
+  // Atomic write: temp file + rename
+  const tempPath = `${dbPath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tempPath, buffer);
+    fs.renameSync(tempPath, dbPath);  // Atomic on POSIX
+  } catch (error) {
+    // Clean up temp file if rename failed
+    try {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw error;
+  }
 }
 
 /**
