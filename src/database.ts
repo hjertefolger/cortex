@@ -389,8 +389,16 @@ function createSchema(db: SqlJsDatabase): void {
     )
   `);
 
-  db.run(`CREATE INDEX IF NOT EXISTS idx_summaries_project ON session_summaries(project_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_summaries_timestamp ON session_summaries(timestamp DESC)`);
+
+  // Session progress table (for incremental indexing)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS session_progress (
+      session_id TEXT PRIMARY KEY,
+      last_processed_line INTEGER NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
   // Try to create FTS5 virtual table (may not be available in all sql.js builds)
   fts5Available = checkFts5(db);
@@ -1097,6 +1105,42 @@ export function getRecentSummaries(
     keyOutcomes: (row[4] as string | null)?.split('\n').filter(Boolean) || [],
     timestamp: new Date(row[5] as string),
   }));
+}
+
+// ============================================================================
+// Session Progress Operations
+// ============================================================================
+
+/**
+ * Get last processed line number for a session
+ */
+export function getSessionProgress(db: SqlJsDatabase, sessionId: string): number {
+  try {
+    const result = db.exec(
+      `SELECT last_processed_line FROM session_progress WHERE session_id = ?`,
+      [sessionId]
+    );
+    if (result.length === 0 || result[0].values.length === 0) {
+      return 0;
+    }
+    return result[0].values[0][0] as number;
+  } catch {
+    return 0; // Table might not exist yet if not migrated
+  }
+}
+
+/**
+ * Update session progress
+ */
+export function updateSessionProgress(db: SqlJsDatabase, sessionId: string, lastLine: number): void {
+  try {
+    db.run(
+      `INSERT OR REPLACE INTO session_progress (session_id, last_processed_line) VALUES (?, ?)`,
+      [sessionId, lastLine]
+    );
+  } catch (e) {
+    console.error('Failed to update session progress:', e);
+  }
 }
 
 // ============================================================================

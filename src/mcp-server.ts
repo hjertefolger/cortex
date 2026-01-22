@@ -411,7 +411,7 @@ async function handleRestore(
     summary: `Found ${fragments.length} recent memories from ${projectId || 'global'} context.`,
     fragments,
     estimatedTokens,
-    withinBudget: estimatedTokens <= config.automation.restorationTokenBudget,
+    withinBudget: estimatedTokens <= config.restoration.tokenBudget,
   };
 }
 
@@ -534,11 +534,12 @@ function generateInsights(summary: { averageContextAtSave: number; sessionsProlo
   const config = loadConfig();
 
   if (summary.averageContextAtSave > 0) {
-    const diff = Math.abs(summary.averageContextAtSave - config.automation.autoSaveThreshold);
+    const threshold = 70; // Heuristic threshold
+    const diff = Math.abs(summary.averageContextAtSave - threshold);
     if (diff < 5) {
-      insights.push(`Your average save happens at ${Math.round(summary.averageContextAtSave)}% - threshold is ${config.automation.autoSaveThreshold}% (good match)`);
-    } else if (summary.averageContextAtSave > config.automation.autoSaveThreshold) {
-      insights.push(`You typically save at ${Math.round(summary.averageContextAtSave)}% - consider lowering your threshold from ${config.automation.autoSaveThreshold}%`);
+      insights.push(`Your average save happens at ${Math.round(summary.averageContextAtSave)}% - threshold is ${threshold}% (good match)`);
+    } else if (summary.averageContextAtSave > threshold) {
+      insights.push(`You typically save at ${Math.round(summary.averageContextAtSave)}% - consider lower context usage`);
     }
   }
 
@@ -557,12 +558,8 @@ function generateRecommendations(summary: { averageContextAtSave: number; sessio
   const recommendations: string[] = [];
   const config = loadConfig();
 
-  if (!config.automation.autoClearEnabled && summary.sessionsProlonged > 3) {
-    recommendations.push('Consider enabling auto-clear - you manually clear after most saves');
-  }
-
   if (summary.averageContextAtSave > 85) {
-    recommendations.push('Your context often gets very high before saving - consider lowering autoSaveThreshold');
+    recommendations.push('Your context often gets very high before saving - consider using /save more frequently');
   }
 
   return recommendations;
@@ -626,7 +623,7 @@ class MCPServer {
         },
         serverInfo: {
           name: 'cortex-memory',
-          version: '2.0.0',
+          version: '2.0.3',
         },
       },
     };

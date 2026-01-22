@@ -1,6 +1,6 @@
 # Cortex
 
-[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
 [![Tests](https://img.shields.io/badge/tests-187%20passing-success.svg)](#testing)
@@ -17,7 +17,7 @@
 
 | Problem | Cortex Solution |
 |---------|-----------------|
-| Session limits hit mid-task | Auto-save at configurable thresholds (default 70%) |
+| Session limits hit mid-task | Auto-save on context step (5%) & session end |
 | `/clear` wipes everything | SQLite persistence survives clears |
 | Re-explaining context every session | Hybrid search recalls relevant memories |
 | Cloud memory privacy concerns | 100% local — `~/.cortex/memory.db` |
@@ -88,8 +88,8 @@ The statusline is configured automatically by `/cortex-setup`. Restart Claude Co
 - `45%` — Context percentage
 
 **Line 2 (conditional):**
-- `✓ Autosaved ⚠ Run /clear` — After auto-save triggers
-- `⚠ Context at 75%. Run /clear` — When warning threshold reached
+- `✓ Autosaved` — Transient success indicator (5s)
+- `⠋ Saving` — Animated loader during background save
 
 ## Architecture
 
@@ -230,7 +230,11 @@ cortex_save()
     "minContentLength": 50
   },
   "automation": {
-    "autoSaveThreshold": 70,
+    "autoSaveThreshold": 70,    // Legacy (fallback)
+    "contextStep": {            // Primary Trigger
+       "enabled": true,
+       "step": 5
+    },
     "autoClearThreshold": 80,
     "autoClearEnabled": false,
     "restorationTokenBudget": 1000,
@@ -316,13 +320,13 @@ npm test
 ✔ Config Module (5 tests)
 ✔ Database Module (30+ tests)
 ✔ Embeddings Module (8 tests)
-✔ Search Module (10+ tests)
+✔ Search Module (31 tests)
 ✔ Integration Tests (20+ tests)
 ✔ MCP Tool Handlers (30+ tests)
 
-ℹ tests 187
+ℹ tests 215
 ℹ suites 12
-ℹ pass 187
+ℹ pass 215
 ℹ fail 0
 ℹ duration_ms 338
 ```

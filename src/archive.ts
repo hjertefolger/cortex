@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
 import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertMemory, contentExists, saveDb, insertTurn, clearProjectTurns, getRecentTurns, upsertSessionSummary } from './database.js';
+import { insertMemory, contentExists, saveDb, insertTurn, getRecentTurns, upsertSessionSummary, getSessionProgress, updateSessionProgress, clearOldTurns } from './database.js';
 import { embedBatch } from './embeddings.js';
 import { loadConfig } from './config.js';
 import type { ArchiveResult, TranscriptMessage, ParseResult } from './types.js';
@@ -17,7 +17,7 @@ import type { ArchiveResult, TranscriptMessage, ParseResult } from './types.js';
 // ============================================================================
 
 // Chunk size settings (research-backed optimal range for semantic search)
-const MIN_CONTENT_LENGTH = 150;  // Increased from 50 - avoid noise
+const MIN_CONTENT_LENGTH = 75;  // Adjusted to capture code snippets
 const OPTIMAL_CHUNK_SIZE = 400;  // Target chunk size for best retrieval
 const MAX_CHUNK_SIZE = 600;      // Upper bound before splitting
 
@@ -29,7 +29,7 @@ const EXCLUDED_PATTERNS = [
   /^n(o)?$/i,
   /^\d+$/,  // Just numbers
   /^[.!?]+$/, // Just punctuation
-  /^```[\s\S]*```$/,  // Pure code blocks without explanation
+  // /^```[\s\S]*```$/,  // Removed: Code blocks ARE valuable
   /^\[Cortex\]/,  // Our own status messages
   /^Running:/i,  // Tool execution outputs
 ];
@@ -80,7 +80,8 @@ const VALUABLE_PATTERNS = [
  * Returns messages with parsing statistics
  */
 export async function parseTranscript(
-  transcriptPath: string
+  transcriptPath: string,
+  startLine: number = 0
 ): Promise<ParseResult> {
   const result: ParseResult = {
     messages: [],
@@ -103,7 +104,19 @@ export async function parseTranscript(
     crlfDelay: Infinity,
   });
 
+  // Track tool IDs to names to filter outputs intelligently
+  // Persists across lines since tool_use and tool_result are separated
+  const toolIdMap = new Map<string, string>();
+
+  let currentLine = 0;
   for await (const line of rl) {
+    currentLine++;
+
+    if (currentLine <= startLine) {
+      result.stats.totalLines++; // Keep total count accurate
+      continue;
+    }
+
     result.stats.totalLines++;
 
     if (!line.trim()) {
@@ -117,7 +130,7 @@ export async function parseTranscript(
       // Handle different transcript formats
       if (parsed.role && parsed.content) {
         // Direct message format
-        const content = extractTextContent(parsed.content);
+        const content = extractTextContent(parsed.content, toolIdMap);
         if (content) {
           result.messages.push({
             role: parsed.role,
@@ -128,12 +141,12 @@ export async function parseTranscript(
         } else {
           result.stats.skippedLines++;
         }
-      } else if ((parsed.type === 'message' || parsed.type === 'user' || parsed.type === 'assistant') && parsed.message) {
+      } else if ((parsed.type === 'message' || parsed.type === 'user' || parsed.type === 'assistant' || parsed.type === 'tool_use' || parsed.type === 'tool_result') && parsed.message) {
         // Wrapped message format (Claude Code uses type: 'user' or 'assistant')
-        const content = extractTextContent(parsed.message.content);
+        const content = extractTextContent(parsed.message.content, toolIdMap);
         if (content) {
           result.messages.push({
-            role: parsed.message.role,
+            role: parsed.message.role || (parsed.type === 'tool_result' ? 'user' : 'assistant'),
             content,
             timestamp: parsed.timestamp,
           });
@@ -156,8 +169,9 @@ export async function parseTranscript(
 
 /**
  * Extract text content from various content formats
+ * Uses toolIdMap to intelligently filter tool outputs
  */
-function extractTextContent(content: unknown): string {
+function extractTextContent(content: unknown, toolIdMap: Map<string, string>): string {
   if (typeof content === 'string') {
     return content;
   }
@@ -171,6 +185,57 @@ function extractTextContent(content: unknown): string {
       } else if (typeof item === 'object' && item !== null) {
         if ('text' in item && typeof item.text === 'string') {
           textParts.push(item.text);
+        } else if ('thinking' in item && typeof item.thinking === 'string') {
+          // Include thinking blocks as they contain valuable context/reasoning
+          textParts.push(`[Thinking] ${item.thinking}`);
+        } else if (item.type === 'tool_use') {
+          // Track tool ID
+          if (item.id && item.name) {
+            toolIdMap.set(item.id, item.name);
+          }
+
+          // Capture tool usage (code writing, commands)
+          const input = item.input || {};
+          const name = item.name;
+
+          if (name === 'write_to_file' || name === 'Write') {
+            // Prioritize capturing written code
+            const code = input.content || input.code;
+            if (code) textParts.push(`[Code Written] ${name}:\n${code}`);
+          } else if (name === 'replace_file_content' || name === 'Edit') {
+            const code = input.replacement || input.new_string || input.content;
+            if (code) textParts.push(`[Code Written] ${name}:\n${code}`);
+            // Also capture instruction
+            if (input.instruction) textParts.push(`[Task] ${input.instruction}`);
+          } else if (name === 'run_command' || name === 'Bash') {
+            if (input.command) textParts.push(`[Command] ${input.command}`);
+          } else if (name === 'Task') {
+            if (input.prompt) textParts.push(`[Task] ${input.prompt}`);
+          } else {
+            // Generic tool use - minimal info
+            textParts.push(`[Tool Use] ${name}`);
+          }
+        } else if (item.type === 'tool_result') {
+          // Filter based on tool type using map
+          const toolName = toolIdMap.get(item.tool_use_id);
+          const isCommand = toolName === 'run_command' || toolName === 'Bash' || toolName === 'repl';
+
+          // DROP read_file, search, and other info-gathering outputs (already in repo/noise)
+          // ONLY keep run_command outputs (test results, errors, logs)
+          if (!isCommand) {
+            // Skip completely
+            continue;
+          }
+
+          let result = typeof item.content === 'string' ? item.content :
+            Array.isArray(item.content) ? extractTextContent(item.content, toolIdMap) : '';
+
+          // Truncate even command outputs if excessive
+          if (result.length > 500) {
+            result = result.substring(0, 500) + '... [Output truncated]';
+          }
+
+          textParts.push(`[Tool Output] ${result}`);
         }
       }
     }
@@ -211,6 +276,11 @@ function shouldExclude(content: string): boolean {
  * Returns: 0 = not valuable, 1 = standard value, 2 = high value
  */
 function getContentValue(content: string): number {
+  // Always value code blocks
+  if (content.includes('```')) {
+    return 1;
+  }
+
   // Check high-value patterns first
   for (const pattern of HIGH_VALUE_PATTERNS) {
     if (pattern.test(content)) {
@@ -248,11 +318,30 @@ function isValuable(content: string): boolean {
 function extractChunks(content: string, role: 'user' | 'assistant' = 'assistant'): string[] {
   const chunks: string[] = [];
 
-  // Split by paragraphs or significant breaks
-  const paragraphs = content.split(/\n\n+/);
+  // 1. preserve code blocks by replacing them with placeholders
+  const codeBlockMatches: string[] = [];
+  const placeholderPrefix = '___CORTEX_CODE_BLOCK_';
+
+  const protectedContent = content.replace(/```[\s\S]*?```/g, (match) => {
+    codeBlockMatches.push(match);
+    return `${placeholderPrefix}${codeBlockMatches.length - 1}___`;
+  });
+
+  // 2. Split by paragraphs or significant breaks
+  // We use lookahead to keep the delimiters or just split
+  const paragraphs = protectedContent.split(/\n\n+/);
 
   for (const para of paragraphs) {
-    const trimmed = para.trim();
+    let text = para.trim();
+
+    // 3. Restore code blocks
+    if (text.includes(placeholderPrefix)) {
+      text = text.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, 'g'), (_, index) => {
+        return codeBlockMatches[parseInt(index)];
+      });
+    }
+
+    const trimmed = text.trim();
 
     if (trimmed.length < MIN_CONTENT_LENGTH) {
       continue;
@@ -429,41 +518,41 @@ function extractSessionInsights(messages: TranscriptMessage[]): {
 // ============================================================================
 
 /**
- * Save raw conversation turns for restoration after /clear
- * Keeps the last N turns (user + assistant messages) with timestamps
+ * Append new conversation turns to the session history
  */
-export async function saveSessionTurns(
+export async function appendSessionTurns(
   db: SqlJsDatabase,
-  transcriptPath: string,
+  newMessages: TranscriptMessage[],
   projectId: string | null,
-  maxTurns: number = 6
+  sessionId: string
 ): Promise<number> {
-  const { messages } = await parseTranscript(transcriptPath);
+  if (newMessages.length === 0) {
+    return 0;
+  }
 
-  // Get session ID from transcript path
-  const sessionId = getSessionId(transcriptPath);
-
-  // Filter to user and assistant messages only, take last N
-  const relevantMessages = messages
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .slice(-maxTurns);
+  // Filter to user and assistant messages only
+  const relevantMessages = newMessages
+    .filter(m => m.role === 'user' || m.role === 'assistant');
 
   if (relevantMessages.length === 0) {
     return 0;
   }
 
-  // Clear existing turns for this project before saving new ones
-  clearProjectTurns(db, projectId);
+  // Get current max turn index to append correctly
+  const result = db.exec(
+    `SELECT MAX(turn_index) FROM session_turns WHERE session_id = ?`,
+    [sessionId]
+  );
+  let nextIndex = (result[0]?.values[0]?.[0] as number ?? -1) + 1;
 
   let savedCount = 0;
-  for (let i = 0; i < relevantMessages.length; i++) {
-    const msg = relevantMessages[i];
+  for (const msg of relevantMessages) {
     insertTurn(db, {
       role: msg.role as 'user' | 'assistant',
       content: msg.content,
       projectId,
       sessionId,
-      turnIndex: i,
+      turnIndex: nextIndex++,
       timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
     });
     savedCount++;
@@ -496,16 +585,26 @@ export async function archiveSession(
     duplicates: 0,
   };
 
-  // Parse transcript
-  const { messages, stats: parseStats } = await parseTranscript(transcriptPath);
+  const sessionId = getSessionId(transcriptPath);
+
+  // Incremental processing: get last line
+  const startLine = getSessionProgress(db, sessionId);
+
+  // Parse transcript from last position
+  const { messages, stats: parseStats } = await parseTranscript(transcriptPath, startLine);
 
   if (messages.length === 0) {
+    // Even if no messages, we might have skipped lines effectively
+    if (parseStats.totalLines > startLine) {
+      updateSessionProgress(db, sessionId, parseStats.totalLines);
+      saveDb(db);
+    }
     return result;
   }
 
   // Log parse stats if there were errors
-  if (parseStats.parseErrors > 0) {
-    console.error(`Warning: ${parseStats.parseErrors} lines failed to parse in transcript`);
+  if (parseStats.parseErrors > 0 || parseStats.skippedLines > 0) {
+    console.log(`Debug Parse Stats: Total: ${parseStats.totalLines}, Parsed: ${parseStats.parsedLines}, Skipped: ${parseStats.skippedLines}, Errors: ${parseStats.parseErrors}`);
   }
 
   // Extract and filter content from BOTH user and assistant messages
@@ -566,6 +665,9 @@ export async function archiveSession(
   // Sort by value (high-value content first) to prioritize if we hit limits
   contentToArchive.sort((a, b) => b.value - a.value);
 
+  const totalExtractedLength = contentToArchive.reduce((sum, c) => sum + c.content.length, 0);
+  console.log(`Debug: Extracted ${contentToArchive.length} chunks (${totalExtractedLength} chars) from ${messages.length} messages`);
+
   if (contentToArchive.length === 0) {
     return result;
   }
@@ -577,8 +679,6 @@ export async function archiveSession(
   });
 
   // Store in database
-  const sessionId = getSessionId(transcriptPath);
-
   for (let i = 0; i < contentToArchive.length; i++) {
     const { content, timestamp } = contentToArchive[i];
     const embedding = embeddings[i];
@@ -598,9 +698,15 @@ export async function archiveSession(
     }
   }
 
+  // Update session progress
+  updateSessionProgress(db, sessionId, parseStats.totalLines);
+
   // Also save raw turns for precise restoration after /clear
-  const turnCount = config.restoration.turnCount * 2; // * 2 for user+assistant pairs
-  await saveSessionTurns(db, transcriptPath, projectId, turnCount);
+  await appendSessionTurns(db, messages, projectId, sessionId);
+
+  // Prune old turns to keep database size manageable
+  const turnLimit = config.restoration.turnCount * 4; // Keep generous history for safety
+  clearOldTurns(db, turnLimit);
 
   // Extract and save session summary (LLM-free pattern matching)
   const insights = extractSessionInsights(messages);

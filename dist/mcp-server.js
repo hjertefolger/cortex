@@ -6905,8 +6905,14 @@ function createSchema(db) {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_summaries_project ON session_summaries(project_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_summaries_timestamp ON session_summaries(timestamp DESC)`);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS session_progress (
+      session_id TEXT PRIMARY KEY,
+      last_processed_line INTEGER NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
   fts5Available = checkFts5(db);
   if (fts5Available) {
     try {
@@ -7203,12 +7209,15 @@ function insertTurn(db, turn) {
   const result = db.exec(`SELECT last_insert_rowid()`);
   return result[0].values[0][0];
 }
-function clearProjectTurns(db, projectId) {
-  if (projectId === null) {
-    db.run(`DELETE FROM session_turns WHERE project_id IS NULL`);
-  } else {
-    db.run(`DELETE FROM session_turns WHERE project_id = ?`, [projectId]);
-  }
+function clearOldTurns(db, keepCount = 10) {
+  db.run(`
+    DELETE FROM session_turns
+    WHERE id NOT IN (
+      SELECT id FROM session_turns
+      ORDER BY timestamp DESC, turn_index DESC
+      LIMIT ?
+    )
+  `, [keepCount]);
   return db.getRowsModified();
 }
 function upsertSessionSummary(db, input) {
@@ -7230,6 +7239,30 @@ function upsertSessionSummary(db, input) {
   );
   const result = db.exec(`SELECT last_insert_rowid()`);
   return result[0].values[0][0];
+}
+function getSessionProgress(db, sessionId) {
+  try {
+    const result = db.exec(
+      `SELECT last_processed_line FROM session_progress WHERE session_id = ?`,
+      [sessionId]
+    );
+    if (result.length === 0 || result[0].values.length === 0) {
+      return 0;
+    }
+    return result[0].values[0][0];
+  } catch {
+    return 0;
+  }
+}
+function updateSessionProgress(db, sessionId, lastLine) {
+  try {
+    db.run(
+      `INSERT OR REPLACE INTO session_progress (session_id, last_processed_line) VALUES (?, ?)`,
+      [sessionId, lastLine]
+    );
+  } catch (e) {
+    console.error("Failed to update session progress:", e);
+  }
 }
 function cosineSimilarity(a, b) {
   if (a.length !== b.length) {
@@ -7492,7 +7525,7 @@ init_embeddings();
 init_config();
 import * as fs3 from "fs";
 import * as readline from "readline";
-var MIN_CONTENT_LENGTH = 150;
+var MIN_CONTENT_LENGTH = 75;
 var OPTIMAL_CHUNK_SIZE = 400;
 var MAX_CHUNK_SIZE = 600;
 var EXCLUDED_PATTERNS = [
@@ -7504,8 +7537,7 @@ var EXCLUDED_PATTERNS = [
   // Just numbers
   /^[.!?]+$/,
   // Just punctuation
-  /^```[\s\S]*```$/,
-  // Pure code blocks without explanation
+  // /^```[\s\S]*```$/,  // Removed: Code blocks ARE valuable
   /^\[Cortex\]/,
   // Our own status messages
   /^Running:/i
@@ -7541,7 +7573,7 @@ var VALUABLE_PATTERNS = [
   /should|must|need to|have to/i,
   /config|setting|option|parameter/i
 ];
-async function parseTranscript(transcriptPath) {
+async function parseTranscript(transcriptPath, startLine = 0) {
   const result = {
     messages: [],
     stats: {
@@ -7560,7 +7592,14 @@ async function parseTranscript(transcriptPath) {
     input: fileStream,
     crlfDelay: Infinity
   });
+  const toolIdMap = /* @__PURE__ */ new Map();
+  let currentLine = 0;
   for await (const line of rl) {
+    currentLine++;
+    if (currentLine <= startLine) {
+      result.stats.totalLines++;
+      continue;
+    }
     result.stats.totalLines++;
     if (!line.trim()) {
       result.stats.emptyLines++;
@@ -7569,7 +7608,7 @@ async function parseTranscript(transcriptPath) {
     try {
       const parsed = JSON.parse(line);
       if (parsed.role && parsed.content) {
-        const content = extractTextContent(parsed.content);
+        const content = extractTextContent(parsed.content, toolIdMap);
         if (content) {
           result.messages.push({
             role: parsed.role,
@@ -7580,11 +7619,11 @@ async function parseTranscript(transcriptPath) {
         } else {
           result.stats.skippedLines++;
         }
-      } else if ((parsed.type === "message" || parsed.type === "user" || parsed.type === "assistant") && parsed.message) {
-        const content = extractTextContent(parsed.message.content);
+      } else if ((parsed.type === "message" || parsed.type === "user" || parsed.type === "assistant" || parsed.type === "tool_use" || parsed.type === "tool_result") && parsed.message) {
+        const content = extractTextContent(parsed.message.content, toolIdMap);
         if (content) {
           result.messages.push({
-            role: parsed.message.role,
+            role: parsed.message.role || (parsed.type === "tool_result" ? "user" : "assistant"),
             content,
             timestamp: parsed.timestamp
           });
@@ -7601,7 +7640,7 @@ async function parseTranscript(transcriptPath) {
   }
   return result;
 }
-function extractTextContent(content) {
+function extractTextContent(content, toolIdMap) {
   if (typeof content === "string") {
     return content;
   }
@@ -7613,6 +7652,46 @@ function extractTextContent(content) {
       } else if (typeof item === "object" && item !== null) {
         if ("text" in item && typeof item.text === "string") {
           textParts.push(item.text);
+        } else if ("thinking" in item && typeof item.thinking === "string") {
+          textParts.push(`[Thinking] ${item.thinking}`);
+        } else if (item.type === "tool_use") {
+          if (item.id && item.name) {
+            toolIdMap.set(item.id, item.name);
+          }
+          const input = item.input || {};
+          const name = item.name;
+          if (name === "write_to_file" || name === "Write") {
+            const code = input.content || input.code;
+            if (code)
+              textParts.push(`[Code Written] ${name}:
+${code}`);
+          } else if (name === "replace_file_content" || name === "Edit") {
+            const code = input.replacement || input.new_string || input.content;
+            if (code)
+              textParts.push(`[Code Written] ${name}:
+${code}`);
+            if (input.instruction)
+              textParts.push(`[Task] ${input.instruction}`);
+          } else if (name === "run_command" || name === "Bash") {
+            if (input.command)
+              textParts.push(`[Command] ${input.command}`);
+          } else if (name === "Task") {
+            if (input.prompt)
+              textParts.push(`[Task] ${input.prompt}`);
+          } else {
+            textParts.push(`[Tool Use] ${name}`);
+          }
+        } else if (item.type === "tool_result") {
+          const toolName = toolIdMap.get(item.tool_use_id);
+          const isCommand = toolName === "run_command" || toolName === "Bash" || toolName === "repl";
+          if (!isCommand) {
+            continue;
+          }
+          let result = typeof item.content === "string" ? item.content : Array.isArray(item.content) ? extractTextContent(item.content, toolIdMap) : "";
+          if (result.length > 500) {
+            result = result.substring(0, 500) + "... [Output truncated]";
+          }
+          textParts.push(`[Tool Output] ${result}`);
         }
       }
     }
@@ -7633,6 +7712,9 @@ function shouldExclude(content) {
   return false;
 }
 function getContentValue(content) {
+  if (content.includes("```")) {
+    return 1;
+  }
   for (const pattern of HIGH_VALUE_PATTERNS) {
     if (pattern.test(content)) {
       return 2;
@@ -7651,9 +7733,21 @@ function getContentValue(content) {
 }
 function extractChunks(content, role = "assistant") {
   const chunks = [];
-  const paragraphs = content.split(/\n\n+/);
+  const codeBlockMatches = [];
+  const placeholderPrefix = "___CORTEX_CODE_BLOCK_";
+  const protectedContent = content.replace(/```[\s\S]*?```/g, (match) => {
+    codeBlockMatches.push(match);
+    return `${placeholderPrefix}${codeBlockMatches.length - 1}___`;
+  });
+  const paragraphs = protectedContent.split(/\n\n+/);
   for (const para of paragraphs) {
-    const trimmed = para.trim();
+    let text = para.trim();
+    if (text.includes(placeholderPrefix)) {
+      text = text.replace(new RegExp(`${placeholderPrefix}(\\d+)___`, "g"), (_, index) => {
+        return codeBlockMatches[parseInt(index)];
+      });
+    }
+    const trimmed = text.trim();
     if (trimmed.length < MIN_CONTENT_LENGTH) {
       continue;
     }
@@ -7772,23 +7866,27 @@ function extractSessionInsights(messages) {
     summary: summary.substring(0, 500)
   };
 }
-async function saveSessionTurns(db, transcriptPath, projectId, maxTurns = 6) {
-  const { messages } = await parseTranscript(transcriptPath);
-  const sessionId = getSessionId(transcriptPath);
-  const relevantMessages = messages.filter((m) => m.role === "user" || m.role === "assistant").slice(-maxTurns);
+async function appendSessionTurns(db, newMessages, projectId, sessionId) {
+  if (newMessages.length === 0) {
+    return 0;
+  }
+  const relevantMessages = newMessages.filter((m) => m.role === "user" || m.role === "assistant");
   if (relevantMessages.length === 0) {
     return 0;
   }
-  clearProjectTurns(db, projectId);
+  const result = db.exec(
+    `SELECT MAX(turn_index) FROM session_turns WHERE session_id = ?`,
+    [sessionId]
+  );
+  let nextIndex = (result[0]?.values[0]?.[0] ?? -1) + 1;
   let savedCount = 0;
-  for (let i = 0; i < relevantMessages.length; i++) {
-    const msg = relevantMessages[i];
+  for (const msg of relevantMessages) {
     insertTurn(db, {
       role: msg.role,
       content: msg.content,
       projectId,
       sessionId,
-      turnIndex: i,
+      turnIndex: nextIndex++,
       timestamp: msg.timestamp ? new Date(msg.timestamp) : /* @__PURE__ */ new Date()
     });
     savedCount++;
@@ -7803,12 +7901,18 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
     skipped: 0,
     duplicates: 0
   };
-  const { messages, stats: parseStats } = await parseTranscript(transcriptPath);
+  const sessionId = getSessionId(transcriptPath);
+  const startLine = getSessionProgress(db, sessionId);
+  const { messages, stats: parseStats } = await parseTranscript(transcriptPath, startLine);
   if (messages.length === 0) {
+    if (parseStats.totalLines > startLine) {
+      updateSessionProgress(db, sessionId, parseStats.totalLines);
+      saveDb(db);
+    }
     return result;
   }
-  if (parseStats.parseErrors > 0) {
-    console.error(`Warning: ${parseStats.parseErrors} lines failed to parse in transcript`);
+  if (parseStats.parseErrors > 0 || parseStats.skippedLines > 0) {
+    console.log(`Debug Parse Stats: Total: ${parseStats.totalLines}, Parsed: ${parseStats.parsedLines}, Skipped: ${parseStats.skippedLines}, Errors: ${parseStats.parseErrors}`);
   }
   const contentToArchive = [];
   for (const message of messages) {
@@ -7846,6 +7950,8 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
     }
   }
   contentToArchive.sort((a, b) => b.value - a.value);
+  const totalExtractedLength = contentToArchive.reduce((sum, c) => sum + c.content.length, 0);
+  console.log(`Debug: Extracted ${contentToArchive.length} chunks (${totalExtractedLength} chars) from ${messages.length} messages`);
   if (contentToArchive.length === 0) {
     return result;
   }
@@ -7853,7 +7959,6 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
   const embeddings = await embedBatch(texts, {
     onProgress: options.onProgress
   });
-  const sessionId = getSessionId(transcriptPath);
   for (let i = 0; i < contentToArchive.length; i++) {
     const { content, timestamp } = contentToArchive[i];
     const embedding = embeddings[i];
@@ -7870,8 +7975,10 @@ async function archiveSession(db, transcriptPath, projectId, options = {}) {
       result.archived++;
     }
   }
-  const turnCount = config.restoration.turnCount * 2;
-  await saveSessionTurns(db, transcriptPath, projectId, turnCount);
+  updateSessionProgress(db, sessionId, parseStats.totalLines);
+  await appendSessionTurns(db, messages, projectId, sessionId);
+  const turnLimit = config.restoration.turnCount * 4;
+  clearOldTurns(db, turnLimit);
   const insights = extractSessionInsights(messages);
   if (insights.summary || insights.decisions.length > 0 || insights.outcomes.length > 0) {
     upsertSessionSummary(db, {
@@ -8249,7 +8356,7 @@ async function handleRestore(db, params) {
     summary: `Found ${fragments.length} recent memories from ${projectId || "global"} context.`,
     fragments,
     estimatedTokens,
-    withinBudget: estimatedTokens <= config.automation.restorationTokenBudget
+    withinBudget: estimatedTokens <= config.restoration.tokenBudget
   };
 }
 async function handleDelete(db, params) {
@@ -8342,11 +8449,12 @@ function generateInsights(summary) {
   const insights = [];
   const config = loadConfig();
   if (summary.averageContextAtSave > 0) {
-    const diff = Math.abs(summary.averageContextAtSave - config.automation.autoSaveThreshold);
+    const threshold = 70;
+    const diff = Math.abs(summary.averageContextAtSave - threshold);
     if (diff < 5) {
-      insights.push(`Your average save happens at ${Math.round(summary.averageContextAtSave)}% - threshold is ${config.automation.autoSaveThreshold}% (good match)`);
-    } else if (summary.averageContextAtSave > config.automation.autoSaveThreshold) {
-      insights.push(`You typically save at ${Math.round(summary.averageContextAtSave)}% - consider lowering your threshold from ${config.automation.autoSaveThreshold}%`);
+      insights.push(`Your average save happens at ${Math.round(summary.averageContextAtSave)}% - threshold is ${threshold}% (good match)`);
+    } else if (summary.averageContextAtSave > threshold) {
+      insights.push(`You typically save at ${Math.round(summary.averageContextAtSave)}% - consider lower context usage`);
     }
   }
   if (summary.sessionsProlonged > 0) {
@@ -8360,11 +8468,8 @@ function generateInsights(summary) {
 function generateRecommendations(summary) {
   const recommendations = [];
   const config = loadConfig();
-  if (!config.automation.autoClearEnabled && summary.sessionsProlonged > 3) {
-    recommendations.push("Consider enabling auto-clear - you manually clear after most saves");
-  }
   if (summary.averageContextAtSave > 85) {
-    recommendations.push("Your context often gets very high before saving - consider lowering autoSaveThreshold");
+    recommendations.push("Your context often gets very high before saving - consider using /save more frequently");
   }
   return recommendations;
 }
@@ -8415,7 +8520,7 @@ var MCPServer = class {
         },
         serverInfo: {
           name: "cortex-memory",
-          version: "2.0.0"
+          version: "2.0.3"
         }
       }
     };

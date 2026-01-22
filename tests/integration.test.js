@@ -332,6 +332,65 @@ describe('Integration Tests', () => {
         });
     });
 
+    describe('Search Quality & Relevance', () => {
+        test('should prioritize exact semantic matches over partial keyword matches', () => {
+            // 1. Setup specific distinct memories
+            const memories = [
+                { id: 'ts', content: 'How to configure TypeScript in a Node.js project properly' },
+                { id: 'js', content: 'Node.js event loop explanation and setTimeout' },
+                { id: 'py', content: 'Python script for data analysis with pandas' }
+            ];
+
+            // Use distinct embeddings to simulate semantic difference
+            // In a real scenario, the model would generate these. Here we simulate the vector distance.
+            // We'll manually insert them to control the "closeness" for the test
+
+            // "Target" embedding
+            const targetEmbedding = createMockEmbedding();
+
+            // "Close" embedding (0.9 similarity)
+            const closeEmbedding = new Float32Array(targetEmbedding);
+            closeEmbedding[0] += 0.1; // Slight perturbation
+
+            // "Far" embedding (random)
+            const farEmbedding = createMockEmbedding();
+
+            insertMemory(db, memories[0].content, closeEmbedding, 'project-a', 'session-1'); // TypeScript (Target)
+            insertMemory(db, memories[1].content, farEmbedding, 'project-a', 'session-1');   // Node.js (Noise)
+            insertMemory(db, memories[2].content, farEmbedding, 'project-a', 'session-1');   // Python (Unrelated)
+
+            // 2. Search using the target embedding
+            const results = searchByVector(db, targetEmbedding, 'project-a', 5);
+
+            // 3. Assertions
+            assert.strictEqual(results[0].content, memories[0].content, 'Should rank TypeScript config first');
+            assert.ok(results[0].score > results[1].score, 'Relevant result should have significantly higher score');
+        });
+
+        test('should rank semantically relevant results above keyword-only noise', () => {
+            // Memory A: Semantically relevant to "deployment", but no "deploy" keyword
+            // Memory B: Has "deploy" keyword but totally unrelated context
+
+            const relevantContent = 'Releasing the application to the production server environment';
+            const noiseContent = 'The deploy_script variable is set to true';
+
+            // Simulate semantic search finding the relevant one despite keyword gap
+            // We do this by inserting the relevant one with a closer embedding
+            const queryEmb = createMockEmbedding();
+
+            const relevantEmb = new Float32Array(queryEmb); // Very close
+            const noiseEmb = createMockEmbedding(); // Random/Far
+
+            insertMemory(db, relevantContent, relevantEmb, 'project-a', 's1');
+            insertMemory(db, noiseContent, noiseEmb, 'project-a', 's1');
+
+            const results = searchByVector(db, queryEmb, 'project-a', 5);
+
+            assert.strictEqual(results[0].content, relevantContent);
+            assert.ok(results[0].score > 0.9, 'Semantic match should be high confidence');
+        });
+    });
+
     describe('Cross-Project Learning', () => {
         test('should search across all projects by default (shared knowledge brain)', () => {
             // Store learnings from different projects

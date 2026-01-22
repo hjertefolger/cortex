@@ -489,6 +489,8 @@ interface AutoSaveState {
   lastSaveContext: number;        // Context % at last save
   lastSaveFragments: number;      // Number of fragments saved
   transcriptPath: string | null;  // Current session
+  isSaving: boolean;              // Is a save currently in progress?
+  saveStartTime: number;          // When the current save started (for timeout/animation)
 }
 
 const DEFAULT_AUTO_SAVE_STATE: AutoSaveState = {
@@ -496,6 +498,8 @@ const DEFAULT_AUTO_SAVE_STATE: AutoSaveState = {
   lastSaveContext: 0,
   lastSaveFragments: 0,
   transcriptPath: null,
+  isSaving: false,
+  saveStartTime: 0,
 };
 
 /**
@@ -575,8 +579,37 @@ export function markAutoSaved(transcriptPath: string | null, contextPercent: num
     lastSaveContext: contextPercent,
     lastSaveFragments: fragments,
     transcriptPath,
+    isSaving: false,
+    saveStartTime: 0,
   };
   saveAutoSaveState(state);
+}
+
+/**
+ * Set the saving state (start/stop)
+ */
+export function setSavingState(isSaving: boolean, transcriptPath: string | null): void {
+  const state = loadAutoSaveState();
+  state.isSaving = isSaving;
+  if (isSaving) {
+    state.saveStartTime = Date.now();
+    state.transcriptPath = transcriptPath; // Ensure we track which session is saving
+  } else {
+    state.saveStartTime = 0;
+  }
+  saveAutoSaveState(state);
+}
+
+/**
+ * Check if a save is currently in progress
+ */
+export function isSaving(): boolean {
+  const state = loadAutoSaveState();
+  // Auto-expire lock after 60 seconds in case of crash
+  if (state.isSaving && Date.now() - state.saveStartTime > 60000) {
+    return false;
+  }
+  return state.isSaving;
 }
 
 /**
@@ -585,6 +618,9 @@ export function markAutoSaved(transcriptPath: string | null, contextPercent: num
 export function wasRecentlySaved(windowMs: number = 5000): boolean {
   const state = loadAutoSaveState();
   if (state.lastSaveTimestamp === 0) return false;
+
+  // If currently saving, don't show "Autosaved" yet
+  if (state.isSaving) return false;
 
   const elapsed = Date.now() - state.lastSaveTimestamp;
   return elapsed < windowMs;

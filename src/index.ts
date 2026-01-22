@@ -4,7 +4,8 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, type ConfigPreset } from './config.js';
+import { spawn } from 'child_process';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
@@ -81,6 +82,10 @@ async function main() {
 
       case 'session-start':
         await handleSessionStart();
+        break;
+
+      case 'background-save':
+        await handleBackgroundSave(args);
         break;
 
       case 'session-end':
@@ -211,9 +216,41 @@ async function handleStatusline() {
       parts.push(contextStrip);
     }
 
-    // Inline indicator if saved recently
-    if (wasRecentlySaved()) {
+    // Inline indicator: Saving (Animated) vs Saved
+    if (isSaving()) {
+      const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      const frame = frames[Math.floor(Date.now() / 80) % frames.length];
+      parts.push(`${ANSI.yellow}${frame} Saving${ANSI.reset}`);
+    } else if (wasRecentlySaved()) {
       parts.push(`${ANSI.green}✓ Autosaved${ANSI.reset}`);
+    } else if (stdin?.transcript_path && config.autosave.contextStep.enabled) {
+      // Check triggers immediately if not saving
+      if (shouldAutoSave(contextPercent, stdin.transcript_path)) {
+        // START BACKGROUND SAVE
+        setSavingState(true, stdin.transcript_path);
+
+        const scriptPath = process.argv[1];
+        const nodePath = process.argv[0];
+
+        // Pass necessary context via args
+        const childArgs = ['background-save'];
+        if (stdin.transcript_path) childArgs.push(`--transcript=${stdin.transcript_path}`);
+        if (stdin.cwd) childArgs.push(`--cwd=${stdin.cwd}`);
+        childArgs.push(`--percent=${contextPercent}`);
+
+        try {
+          const subprocess = spawn(nodePath, [scriptPath, ...childArgs], {
+            detached: true,
+            stdio: 'ignore',
+            env: process.env
+          });
+          subprocess.unref();
+          parts.push(`${ANSI.yellow}⠋ Saving${ANSI.reset}`);
+        } catch (e) {
+          // Fallback (show nothing or error debug)
+          setSavingState(false, null);
+        }
+      }
     }
 
     // Output main statusline (no separators)
@@ -441,6 +478,43 @@ async function handleSmartCompact() {
   console.log(`${ANSI.cyan}===========================${ANSI.reset}`);
   console.log('');
   console.log(`${ANSI.dim}Context saved and ready for clear. Use /clear to proceed.${ANSI.reset}`);
+}
+
+async function handleBackgroundSave(args: string[]) {
+  // Parse args manually since we can't read stdin
+  let transcriptPath = '';
+  let cwd = '';
+  let contextPercent = 0;
+
+  for (const arg of args) {
+    if (arg.startsWith('--transcript=')) transcriptPath = arg.slice('--transcript='.length);
+    else if (arg.startsWith('--cwd=')) cwd = arg.slice('--cwd='.length);
+    else if (arg.startsWith('--percent=')) contextPercent = parseFloat(arg.slice('--percent='.length));
+  }
+
+  if (!transcriptPath) {
+    setSavingState(false, null);
+    return;
+  }
+
+  try {
+    const db = await initDb();
+    const projectId = cwd ? getProjectId(cwd) : null;
+
+    const result = await archiveSession(db, transcriptPath, projectId);
+
+    if (result.archived > 0) {
+      markAutoSaved(transcriptPath, contextPercent, result.archived);
+      recordSavePoint(contextPercent, result.archived);
+    } else {
+      // Prevent infinite loop if nothing new
+      markAutoSaved(transcriptPath, contextPercent, 0);
+    }
+    // markAutoSaved sets isSaving=false
+  } catch (error) {
+    // Ensure we clear the lock even on error
+    setSavingState(false, null);
+  }
 }
 
 async function handlePreCompact() {
@@ -879,7 +953,11 @@ export {
   shouldAutoSave,
   markAutoSaved,
   resetAutoSaveState,
-  loadAutoSaveState
+  loadAutoSaveState,
+  archiveSession,
+  initDb,
+  closeDb,
+  hybridSearch
 };
 
 // Run main
