@@ -233,7 +233,7 @@ async function handleStatusline() {
       // Show persistent time indicator if we have a recent save
       const timeAgo = getLastSaveTimeAgo(stdin?.transcript_path ?? null);
       if (timeAgo) {
-        parts.push(`${ANSI.green}✓ ${timeAgo}${ANSI.reset}`);
+        parts.push(`${ANSI.green}✓${ANSI.reset} ${ANSI.dim}${timeAgo}${ANSI.reset}`);
       }
 
       // Check if we should trigger a new save

@@ -9011,7 +9011,7 @@ async function handleStatusline() {
     } else {
       const timeAgo = getLastSaveTimeAgo(stdin?.transcript_path ?? null);
       if (timeAgo) {
-        parts.push(`${ANSI.green}\u2713 ${timeAgo}${ANSI.reset}`);
+        parts.push(`${ANSI.green}\u2713${ANSI.reset} ${ANSI.dim}${timeAgo}${ANSI.reset}`);
       }
       if (stdin?.transcript_path && config.autosave.contextStep.enabled) {
         if (shouldAutoSave(contextPercent, stdin.transcript_path)) {
