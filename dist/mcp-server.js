@@ -7480,7 +7480,7 @@ async function hybridSearch(db, query, options = {}) {
     limit = 5,
     includeAllProjects = false
   } = options;
-  const projectFilter = includeAllProjects ? void 0 : projectScope ? projectId : void 0;
+  const projectFilter = includeAllProjects ? void 0 : projectScope && projectId !== null ? projectId : void 0;
   const queryEmbedding = await embedQuery(query);
   const [vectorResults, keywordResults] = await Promise.all([
     searchByVector(db, queryEmbedding, projectFilter, limit * 2),

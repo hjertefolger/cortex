@@ -9,8 +9,7 @@
 **Persistent local memory for Claude Code.** Longer sessions. Cross-session recall. Zero cloud.
 
 ```
-Ψ 47 ●●○○○ 45%
-✓ Autosaved
+Ψ 47 ●●○○○ 45% ✓ 5m
 ```
 
 ## Why Cortex?
@@ -83,19 +82,16 @@ Done! Restart Claude Code to activate the statusline.
 The statusline is configured automatically by `/cortex-setup`. Restart Claude Code after setup to see it.
 
 ```
-Ψ 47 ●●○○○ 45%
-✓ Autosaved
+Ψ 47 ●●○○○ 45% ✓ 5m
 ```
 
-**Line 1:**
 - `Ψ` — Cortex identifier
-- `47` — Memory fragment count for current project
+- `47` — Memory fragment count (compact: 1.1K, 10.2M, etc.)
 - `●●○○○` — Context usage (filled/empty circles, color-coded)
 - `45%` — Context percentage
-
-**Line 2 (conditional):**
-- `✓ Autosaved` — Transient success indicator (5s)
-- `⠋ Saving` — Animated loader during background save
+- `⠋ Saving` — Animated spinner during background save
+- `✓ Autosaved` — Success indicator (shows for ~5s after save)
+- `✓ 5m` — Time since last save
 
 ## Architecture
 
@@ -130,7 +126,7 @@ The statusline is configured automatically by `/cortex-setup`. Restart Claude Co
 | Module | Lines | Responsibility |
 |--------|-------|----------------|
 | `index.ts` | 836 | Command router, hooks, statusline |
-| `mcp-server.ts` | 750 | MCP protocol, 8 tools exposed |
+| `mcp-server.ts` | 850 | MCP protocol, 11 tools exposed |
 | `database.ts` | 1143 | SQLite, FTS5, backups, recovery |
 | `archive.ts` | 873 | Transcript parsing, chunking |
 | `embeddings.ts` | 337 | Nomic Embed v1.5, quantization |
@@ -193,9 +189,11 @@ Skills are for multi-step workflows. Atomic operations use MCP tools directly.
 | `cortex_recall` | Search memory | Read-only |
 | `cortex_remember` | Save specific insight | Creates memory |
 | `cortex_save` | Archive full session | Creates memories |
-| `cortex_stats` | Get statistics | Read-only |
+| `cortex_stats` | Get statistics + list projects | Read-only |
 | `cortex_restore` | Get restoration context | Read-only |
 | `cortex_analytics` | Usage insights | Read-only |
+| `cortex_update` | Update memory content/project | Modifies memory |
+| `cortex_rename_project` | Bulk rename project | Modifies memories |
 | `cortex_delete` | Delete memory | **Destructive** |
 | `cortex_forget_project` | Delete project memories | **Destructive** |
 
@@ -259,8 +257,6 @@ cortex_save()
 
 ### Key Settings
 
-| Setting | Default | Description |
-|---------|---------|-------------|
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `autosave.contextStep.step` | 5 | % context increase to trigger auto-save |

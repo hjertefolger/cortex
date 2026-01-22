@@ -176,6 +176,12 @@ async function handleStatusline() {
   if (stdin?.cwd) {
     contextPercent = getContextPercent(stdin);
 
+    // Keep session info updated for MCP tools (in case SessionStart didn't fire on resume)
+    const projectId = getProjectId(stdin.cwd);
+    if (stdin.transcript_path) {
+      saveCurrentSession(stdin.transcript_path, projectId === 'unknown' ? null : projectId);
+    }
+
     // Check context step autosave (runs regardless of statusline display setting)
     if (config.autosave.contextStep.enabled && stdin.transcript_path) {
       if (shouldAutoSave(contextPercent, stdin.transcript_path)) {
@@ -227,7 +233,7 @@ async function handleStatusline() {
       // Show persistent time indicator if we have a recent save
       const timeAgo = getLastSaveTimeAgo(stdin?.transcript_path ?? null);
       if (timeAgo) {
-        parts.push(`${ANSI.dim}✓ ${timeAgo}${ANSI.reset}`);
+        parts.push(`${ANSI.green}✓ ${timeAgo}${ANSI.reset}`);
       }
 
       // Check if we should trigger a new save

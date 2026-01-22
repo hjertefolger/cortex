@@ -42,9 +42,10 @@ export async function hybridSearch(
   } = options;
 
   // Determine project filter
+  // When projectId is null (root/global), search all projects unless explicitly scoped
   const projectFilter = includeAllProjects
     ? undefined
-    : projectScope
+    : projectScope && projectId !== null
       ? projectId
       : undefined;
 
@@ -85,9 +86,10 @@ export async function vectorSearch(
     includeAllProjects = false,
   } = options;
 
+  // When projectId is null (root/global), search all projects unless explicitly scoped
   const projectFilter = includeAllProjects
     ? undefined
-    : projectScope
+    : projectScope && projectId !== null
       ? projectId
       : undefined;
 
@@ -119,9 +121,10 @@ export async function keywordSearch(
     includeAllProjects = false,
   } = options;
 
+  // When projectId is null (root/global), search all projects unless explicitly scoped
   const projectFilter = includeAllProjects
     ? undefined
-    : projectScope
+    : projectScope && projectId !== null
       ? projectId
       : undefined;
 

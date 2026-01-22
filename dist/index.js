@@ -4308,13 +4308,16 @@ function shouldAutoSave(currentContext, transcriptPath) {
   return diff >= config.autosave.contextStep.step;
 }
 function markAutoSaved(transcriptPath, contextPercent, fragments) {
+  const oldState = loadAutoSaveState();
   const state = {
     lastSaveTimestamp: Date.now(),
     lastSaveContext: contextPercent,
     lastSaveFragments: fragments,
     transcriptPath,
     isSaving: false,
-    saveStartTime: 0
+    saveStartTime: 0,
+    // Preserve savingDisplayUntil to honor minimum display time
+    savingDisplayUntil: oldState.savingDisplayUntil
   };
   saveAutoSaveState(state);
 }
@@ -7998,7 +8001,7 @@ async function hybridSearch(db, query, options = {}) {
     limit = 5,
     includeAllProjects = false
   } = options;
-  const projectFilter = includeAllProjects ? void 0 : projectScope ? projectId : void 0;
+  const projectFilter = includeAllProjects ? void 0 : projectScope && projectId !== null ? projectId : void 0;
   const queryEmbedding = await embedQuery(query);
   const [vectorResults, keywordResults] = await Promise.all([
     searchByVector(db, queryEmbedding, projectFilter, limit * 2),
@@ -8972,10 +8975,14 @@ async function handleStatusline() {
   let contextPercent = 0;
   if (stdin?.cwd) {
     contextPercent = getContextPercent(stdin);
+    const projectId = getProjectId(stdin.cwd);
+    if (stdin.transcript_path) {
+      saveCurrentSession(stdin.transcript_path, projectId === "unknown" ? null : projectId);
+    }
     if (config.autosave.contextStep.enabled && stdin.transcript_path) {
       if (shouldAutoSave(contextPercent, stdin.transcript_path)) {
-        const projectId = getProjectId(stdin.cwd);
-        const result = await archiveSession(db, stdin.transcript_path, projectId);
+        const projectId2 = getProjectId(stdin.cwd);
+        const result = await archiveSession(db, stdin.transcript_path, projectId2);
         if (result.archived > 0) {
           markAutoSaved(stdin.transcript_path, contextPercent, result.archived);
           recordSavePoint(contextPercent, result.archived);
@@ -9004,7 +9011,7 @@ async function handleStatusline() {
     } else {
       const timeAgo = getLastSaveTimeAgo(stdin?.transcript_path ?? null);
       if (timeAgo) {
-        parts.push(`${ANSI.dim}\u2713 ${timeAgo}${ANSI.reset}`);
+        parts.push(`${ANSI.green}\u2713 ${timeAgo}${ANSI.reset}`);
       }
       if (stdin?.transcript_path && config.autosave.contextStep.enabled) {
         if (shouldAutoSave(contextPercent, stdin.transcript_path)) {

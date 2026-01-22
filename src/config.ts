@@ -576,6 +576,7 @@ export function shouldAutoSave(currentContext: number, transcriptPath: string | 
  * Mark that we've auto-saved
  */
 export function markAutoSaved(transcriptPath: string | null, contextPercent: number, fragments: number): void {
+  const oldState = loadAutoSaveState();
   const state: AutoSaveState = {
     lastSaveTimestamp: Date.now(),
     lastSaveContext: contextPercent,
@@ -583,6 +584,8 @@ export function markAutoSaved(transcriptPath: string | null, contextPercent: num
     transcriptPath,
     isSaving: false,
     saveStartTime: 0,
+    // Preserve savingDisplayUntil to honor minimum display time
+    savingDisplayUntil: oldState.savingDisplayUntil,
   };
   saveAutoSaveState(state);
 }
