@@ -18,6 +18,7 @@ const StatuslineConfigSchema = z.object({
   showFragments: z.boolean(),
   showLastArchive: z.boolean(),
   showContext: z.boolean(),
+  chainedCommand: z.string().optional(),
 });
 
 const ArchiveConfigSchema = z.object({
@@ -698,4 +699,136 @@ export function isAutoSaveStateCurrentSession(transcriptPath: string | null): bo
   if (!transcriptPath) return false;
   const state = loadAutoSaveState();
   return state.transcriptPath === transcriptPath;
+}
+
+// ============================================================================
+// Claude Settings Configuration
+// ============================================================================
+
+export interface StatuslineConfigResult {
+  configured: boolean;
+  skipped: boolean;
+  chained?: boolean;
+  existingCommand?: string;
+  chainedCommand?: string;
+}
+
+/**
+ * Get the chained statusline command, if configured
+ */
+export function getChainedStatuslineCommand(): string | undefined {
+  const config = loadConfig();
+  return config.statusline.chainedCommand;
+}
+
+/**
+ * Build the Cortex statusline command for a given plugin root
+ */
+export function buildCortexStatuslineCommand(pluginRoot: string): string {
+  return `node ${pluginRoot}/dist/index.js statusline`;
+}
+
+/**
+ * Check if a statusline command is a Cortex statusline
+ * Pattern: contains "index.js statusline" which is Cortex-specific
+ */
+function isCortexStatusline(command: string): boolean {
+  return command.includes('index.js statusline');
+}
+
+/**
+ * Configure Cortex statusline in Claude settings
+ *
+ * Behavior:
+ * - If no statusline exists: configure Cortex statusline
+ * - If Cortex statusline exists: update to current plugin path
+ * - If different statusline exists: chain it (unless chain=false, then skip)
+ *
+ * @param settingsPath Path to Claude settings.json
+ * @param pluginRoot Path to Cortex plugin directory
+ * @param options.force If true, overwrite existing non-Cortex statusline without chaining
+ * @param options.chain If true (default), chain existing statusline; if false, skip when existing
+ * @returns Result indicating whether statusline was configured, skipped, or chained
+ */
+export function configureClaudeStatusline(
+  settingsPath: string,
+  pluginRoot: string,
+  options: { force?: boolean; chain?: boolean } = {}
+): StatuslineConfigResult {
+  const { force = false, chain = true } = options;
+  const cortexCommand = buildCortexStatuslineCommand(pluginRoot);
+
+  // Load existing settings
+  let settings: Record<string, unknown> = {};
+  const settingsDir = path.dirname(settingsPath);
+
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch {
+      // If parsing fails, start fresh
+      settings = {};
+    }
+  }
+
+  // Check if statusline already exists
+  const existingStatusline = settings.statusLine as { type?: string; command?: string } | undefined;
+
+  if (existingStatusline?.command && !force) {
+    const existingCommand = existingStatusline.command || '';
+
+    // Check if existing statusline is a Cortex command
+    if (!isCortexStatusline(existingCommand)) {
+      // Different statusline exists
+      if (chain) {
+        // Chain the existing statusline - save it to Cortex config
+        const cortexConfig = loadConfig();
+        cortexConfig.statusline.chainedCommand = existingCommand;
+        saveConfig(cortexConfig);
+
+        // Replace Claude's statusline with Cortex's command
+        settings.statusLine = {
+          type: 'command',
+          command: cortexCommand
+        };
+
+        // Write settings using atomic write to prevent corruption
+        atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+        return {
+          configured: true,
+          skipped: false,
+          chained: true,
+          chainedCommand: existingCommand
+        };
+      } else {
+        // Skip (chain=false, old behavior)
+        return {
+          configured: false,
+          skipped: true,
+          existingCommand
+        };
+      }
+    }
+    // It's a Cortex statusline - update it (might be different path)
+  }
+
+  // Configure statusline
+  settings.statusLine = {
+    type: 'command',
+    command: cortexCommand
+  };
+
+  // Write settings using atomic write to prevent corruption
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+  return {
+    configured: true,
+    skipped: false,
+    chained: false
+  };
 }

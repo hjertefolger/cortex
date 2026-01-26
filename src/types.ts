@@ -104,6 +104,7 @@ export interface StatuslineConfig {
   showFragments: boolean;
   showLastArchive: boolean;
   showContext: boolean;
+  chainedCommand?: string;
 }
 
 export interface ArchiveConfig {
@@ -212,6 +213,7 @@ export type CommandName =
   | 'statusline'
   | 'session-start'
   | 'session-end'
+  | 'background-save'
   | 'monitor'
   | 'context-check'
   | 'pre-compact'

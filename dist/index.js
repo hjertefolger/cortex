@@ -4376,6 +4376,70 @@ function getLastSaveTimeAgo(transcriptPath) {
 function resetAutoSaveState() {
   saveAutoSaveState({ ...DEFAULT_AUTO_SAVE_STATE });
 }
+function getChainedStatuslineCommand() {
+  const config = loadConfig();
+  return config.statusline.chainedCommand;
+}
+function buildCortexStatuslineCommand(pluginRoot) {
+  return `node ${pluginRoot}/dist/index.js statusline`;
+}
+function isCortexStatusline(command) {
+  return command.includes("index.js statusline");
+}
+function configureClaudeStatusline(settingsPath, pluginRoot, options = {}) {
+  const { force = false, chain = true } = options;
+  const cortexCommand = buildCortexStatuslineCommand(pluginRoot);
+  let settings = {};
+  const settingsDir = path.dirname(settingsPath);
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    } catch {
+      settings = {};
+    }
+  }
+  const existingStatusline = settings.statusLine;
+  if (existingStatusline?.command && !force) {
+    const existingCommand = existingStatusline.command || "";
+    if (!isCortexStatusline(existingCommand)) {
+      if (chain) {
+        const cortexConfig = loadConfig();
+        cortexConfig.statusline.chainedCommand = existingCommand;
+        saveConfig(cortexConfig);
+        settings.statusLine = {
+          type: "command",
+          command: cortexCommand
+        };
+        atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        return {
+          configured: true,
+          skipped: false,
+          chained: true,
+          chainedCommand: existingCommand
+        };
+      } else {
+        return {
+          configured: false,
+          skipped: true,
+          existingCommand
+        };
+      }
+    }
+  }
+  settings.statusLine = {
+    type: "command",
+    command: cortexCommand
+  };
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return {
+    configured: true,
+    skipped: false,
+    chained: false
+  };
+}
 var StatuslineConfigSchema, ArchiveConfigSchema, AutosaveConfigSchema, RestorationConfigSchema, SetupConfigSchema, ConfigSchema, DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_AUTOSAVE_CONFIG, DEFAULT_RESTORATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG, CONFIG_PRESETS, GLOBAL_SESSION_KEY, DEFAULT_AUTO_SAVE_STATE;
 var init_config = __esm({
   "src/config.ts"() {
@@ -4385,7 +4449,8 @@ var init_config = __esm({
       enabled: external_exports.boolean(),
       showFragments: external_exports.boolean(),
       showLastArchive: external_exports.boolean(),
-      showContext: external_exports.boolean()
+      showContext: external_exports.boolean(),
+      chainedCommand: external_exports.string().optional()
     });
     ArchiveConfigSchema = external_exports.object({
       projectScope: external_exports.boolean(),
@@ -7986,7 +8051,7 @@ function formatCompactNumber(n) {
 init_config();
 init_database();
 init_embeddings();
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 
 // src/search.ts
 init_database();
@@ -8969,6 +9034,28 @@ async function main() {
     closeDb();
   }
 }
+var CHAINED_COMMAND_TIMEOUT_MS = 500;
+function executeChainedStatusline() {
+  const chainedCommand = getChainedStatuslineCommand();
+  if (!chainedCommand) {
+    return null;
+  }
+  try {
+    const output = execSync(chainedCommand, {
+      timeout: CHAINED_COMMAND_TIMEOUT_MS,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const firstLine = output.trim().split("\n")[0];
+    return firstLine || null;
+  } catch (error) {
+    debugLog("executeChainedStatusline", "Chained command failed", {
+      command: chainedCommand,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
 async function handleStatusline() {
   const stdin = await readStdin();
   const config = loadConfig();
@@ -8995,7 +9082,13 @@ async function handleStatusline() {
   }
   if (config.statusline.enabled) {
     const stats = getStats(db);
-    const parts = [`${ANSI.brick}\u03A8${ANSI.reset}`];
+    const parts = [];
+    const chainedOutput = executeChainedStatusline();
+    if (chainedOutput) {
+      parts.push(chainedOutput);
+      parts.push(`${ANSI.darkGray}|${ANSI.reset}`);
+    }
+    parts.push(`${ANSI.brick}\u03A8${ANSI.reset}`);
     if (config.statusline.showFragments) {
       parts.push(formatCompactNumber(stats.fragmentCount));
     }
@@ -9313,9 +9406,9 @@ async function handleSetup() {
   const nodeModulesPath = `${pluginDir}/node_modules`;
   if (!fs5.existsSync(nodeModulesPath)) {
     console.log("  \u23F3 Installing dependencies (first run only)...");
-    const { execSync } = await import("child_process");
+    const { execSync: execSync2 } = await import("child_process");
     try {
-      execSync("npm install", {
+      execSync2("npm install", {
         cwd: pluginDir,
         stdio: "pipe",
         timeout: 12e4
@@ -9340,24 +9433,25 @@ async function handleSetup() {
   console.log("  \u23F3 Configuring statusline...");
   const claudeDir = path3.join(os2.homedir(), ".claude");
   const claudeSettingsPath = path3.join(claudeDir, "settings.json");
-  if (!fs5.existsSync(claudeDir)) {
-    fs5.mkdirSync(claudeDir, { recursive: true });
-  }
-  let claudeSettings = {};
-  if (fs5.existsSync(claudeSettingsPath)) {
-    try {
-      claudeSettings = JSON.parse(fs5.readFileSync(claudeSettingsPath, "utf8"));
-    } catch {
-      claudeSettings = {};
-    }
-  }
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
-  claudeSettings.statusLine = {
-    type: "command",
-    command: `node ${pluginRoot}/dist/index.js statusline`
-  };
-  fs5.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2), "utf8");
-  console.log("  \u2713 Statusline configured");
+  const statuslineResult = configureClaudeStatusline(claudeSettingsPath, pluginRoot);
+  if (statuslineResult.configured && statuslineResult.chained) {
+    console.log("  \u2713 Statusline configured (chained with existing)");
+    console.log(`    Your original statusline will run first, followed by Cortex.`);
+    console.log(`    Original: ${statuslineResult.chainedCommand}`);
+  } else if (statuslineResult.configured) {
+    console.log("  \u2713 Statusline configured");
+  } else if (statuslineResult.skipped) {
+    console.log("  \u26A0 Statusline skipped (existing configuration detected)");
+    console.log("");
+    console.log(`${ANSI.yellow}Existing statusline:${ANSI.reset}`);
+    console.log(`  ${statuslineResult.existingCommand}`);
+    console.log("");
+    console.log("To use Cortex statusline instead, either:");
+    console.log("  1. Remove the existing statusLine from ~/.claude/settings.json");
+    console.log("  2. Or manually set it to:");
+    console.log(`     "statusLine": { "type": "command", "command": "node ${pluginRoot}/dist/index.js statusline" }`);
+  }
   markSetupComplete();
   console.log("  \u2713 Setup marked complete");
   const stdin = await readStdin();
@@ -9483,10 +9577,19 @@ async function handleCheckDb() {
     process.exit(1);
   }
 }
-main();
+var isDirectRun = process.argv[1]?.endsWith("index.js") || process.argv[1]?.endsWith("index.ts") || process.env.CORTEX_CLI === "1";
+var isTestImport = process.argv[1]?.includes("node:test") || process.argv[1]?.includes("/test") || process.env.NODE_TEST_CONTEXT;
+if (isDirectRun || !isTestImport && process.argv.length > 1) {
+  main();
+}
 export {
   archiveSession,
+  buildCortexStatuslineCommand,
   closeDb,
+  configureClaudeStatusline,
+  formatDuration,
+  getContextPercent,
+  getProjectId,
   handleCheckDb,
   handleConfigure,
   handlePostTool,
@@ -9502,6 +9605,7 @@ export {
   initDb,
   loadAutoSaveState,
   markAutoSaved,
+  readStdinWithResult,
   resetAutoSaveState,
   shouldAutoSave
 };
