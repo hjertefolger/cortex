@@ -699,3 +699,99 @@ export function isAutoSaveStateCurrentSession(transcriptPath: string | null): bo
   const state = loadAutoSaveState();
   return state.transcriptPath === transcriptPath;
 }
+
+// ============================================================================
+// Claude Settings Configuration
+// ============================================================================
+
+export interface StatuslineConfigResult {
+  configured: boolean;
+  skipped: boolean;
+  existingCommand?: string;
+}
+
+/**
+ * Build the Cortex statusline command for a given plugin root
+ */
+export function buildCortexStatuslineCommand(pluginRoot: string): string {
+  return `node ${pluginRoot}/dist/index.js statusline`;
+}
+
+/**
+ * Check if a statusline command is a Cortex statusline
+ * Pattern: contains "index.js statusline" which is Cortex-specific
+ */
+function isCortexStatusline(command: string): boolean {
+  return command.includes('index.js statusline');
+}
+
+/**
+ * Configure Cortex statusline in Claude settings
+ *
+ * Behavior:
+ * - If no statusline exists: configure Cortex statusline
+ * - If Cortex statusline exists: update to current plugin path
+ * - If different statusline exists: skip (unless force=true)
+ *
+ * @param settingsPath Path to Claude settings.json
+ * @param pluginRoot Path to Cortex plugin directory
+ * @param options.force If true, overwrite existing non-Cortex statusline
+ * @returns Result indicating whether statusline was configured or skipped
+ */
+export function configureClaudeStatusline(
+  settingsPath: string,
+  pluginRoot: string,
+  options: { force?: boolean } = {}
+): StatuslineConfigResult {
+  const { force = false } = options;
+  const cortexCommand = buildCortexStatuslineCommand(pluginRoot);
+
+  // Load existing settings
+  let settings: Record<string, unknown> = {};
+  const settingsDir = path.dirname(settingsPath);
+
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch {
+      // If parsing fails, start fresh
+      settings = {};
+    }
+  }
+
+  // Check if statusline already exists
+  const existingStatusline = settings.statusLine as { type?: string; command?: string } | undefined;
+
+  if (existingStatusline && !force) {
+    const existingCommand = existingStatusline.command || '';
+
+    // Check if existing statusline is a Cortex command
+    if (!isCortexStatusline(existingCommand)) {
+      // Different statusline exists - skip
+      return {
+        configured: false,
+        skipped: true,
+        existingCommand
+      };
+    }
+    // It's a Cortex statusline - update it (might be different path)
+  }
+
+  // Configure statusline
+  settings.statusLine = {
+    type: 'command',
+    command: cortexCommand
+  };
+
+  // Write settings
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+
+  return {
+    configured: true,
+    skipped: false
+  };
+}

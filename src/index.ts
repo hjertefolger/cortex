@@ -4,7 +4,7 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration, formatCompactNumber } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, type ConfigPreset } from './config.js';
 import { spawn } from 'child_process';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
@@ -765,34 +765,25 @@ async function handleSetup() {
   const claudeDir = path.join(os.homedir(), '.claude');
   const claudeSettingsPath = path.join(claudeDir, 'settings.json');
 
-  // Ensure .claude directory exists
-  if (!fs.existsSync(claudeDir)) {
-    fs.mkdirSync(claudeDir, { recursive: true });
-  }
-
-  // Load existing settings or create new
-  let claudeSettings: Record<string, unknown> = {};
-  if (fs.existsSync(claudeSettingsPath)) {
-    try {
-      claudeSettings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-    } catch {
-      // If parsing fails, start fresh
-      claudeSettings = {};
-    }
-  }
-
   // Get plugin path - use CLAUDE_PLUGIN_ROOT env var or derive from current location
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
 
-  // Set statusline command
-  claudeSettings.statusLine = {
-    type: 'command',
-    command: `node ${pluginRoot}/dist/index.js statusline`
-  };
+  // Configure statusline (respects existing non-Cortex statuslines)
+  const statuslineResult = configureClaudeStatusline(claudeSettingsPath, pluginRoot);
 
-  // Write settings
-  fs.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2), 'utf8');
-  console.log('  ✓ Statusline configured');
+  if (statuslineResult.configured) {
+    console.log('  ✓ Statusline configured');
+  } else if (statuslineResult.skipped) {
+    console.log('  ⚠ Statusline skipped (existing configuration detected)');
+    console.log('');
+    console.log(`${ANSI.yellow}Existing statusline:${ANSI.reset}`);
+    console.log(`  ${statuslineResult.existingCommand}`);
+    console.log('');
+    console.log('To use Cortex statusline instead, either:');
+    console.log('  1. Remove the existing statusLine from ~/.claude/settings.json');
+    console.log('  2. Or manually set it to:');
+    console.log(`     "statusLine": { "type": "command", "command": "node ${pluginRoot}/dist/index.js statusline" }`);
+  }
 
   // Mark setup as complete
   markSetupComplete();
