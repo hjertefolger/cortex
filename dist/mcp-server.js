@@ -6586,7 +6586,8 @@ var init_config = __esm({
       enabled: external_exports.boolean(),
       showFragments: external_exports.boolean(),
       showLastArchive: external_exports.boolean(),
-      showContext: external_exports.boolean()
+      showContext: external_exports.boolean(),
+      chainedCommand: external_exports.string().optional()
     });
     ArchiveConfigSchema = external_exports.object({
       projectScope: external_exports.boolean(),

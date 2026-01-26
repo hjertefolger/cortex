@@ -18,6 +18,7 @@ const StatuslineConfigSchema = z.object({
   showFragments: z.boolean(),
   showLastArchive: z.boolean(),
   showContext: z.boolean(),
+  chainedCommand: z.string().optional(),
 });
 
 const ArchiveConfigSchema = z.object({
@@ -707,7 +708,17 @@ export function isAutoSaveStateCurrentSession(transcriptPath: string | null): bo
 export interface StatuslineConfigResult {
   configured: boolean;
   skipped: boolean;
+  chained?: boolean;
   existingCommand?: string;
+  chainedCommand?: string;
+}
+
+/**
+ * Get the chained statusline command, if configured
+ */
+export function getChainedStatuslineCommand(): string | undefined {
+  const config = loadConfig();
+  return config.statusline.chainedCommand;
 }
 
 /**
@@ -731,19 +742,20 @@ function isCortexStatusline(command: string): boolean {
  * Behavior:
  * - If no statusline exists: configure Cortex statusline
  * - If Cortex statusline exists: update to current plugin path
- * - If different statusline exists: skip (unless force=true)
+ * - If different statusline exists: chain it (unless chain=false, then skip)
  *
  * @param settingsPath Path to Claude settings.json
  * @param pluginRoot Path to Cortex plugin directory
- * @param options.force If true, overwrite existing non-Cortex statusline
- * @returns Result indicating whether statusline was configured or skipped
+ * @param options.force If true, overwrite existing non-Cortex statusline without chaining
+ * @param options.chain If true (default), chain existing statusline; if false, skip when existing
+ * @returns Result indicating whether statusline was configured, skipped, or chained
  */
 export function configureClaudeStatusline(
   settingsPath: string,
   pluginRoot: string,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; chain?: boolean } = {}
 ): StatuslineConfigResult {
-  const { force = false } = options;
+  const { force = false, chain = true } = options;
   const cortexCommand = buildCortexStatuslineCommand(pluginRoot);
 
   // Load existing settings
@@ -771,12 +783,36 @@ export function configureClaudeStatusline(
 
     // Check if existing statusline is a Cortex command
     if (!isCortexStatusline(existingCommand)) {
-      // Different statusline exists - skip
-      return {
-        configured: false,
-        skipped: true,
-        existingCommand
-      };
+      // Different statusline exists
+      if (chain) {
+        // Chain the existing statusline - save it to Cortex config
+        const cortexConfig = loadConfig();
+        cortexConfig.statusline.chainedCommand = existingCommand;
+        saveConfig(cortexConfig);
+
+        // Replace Claude's statusline with Cortex's command
+        settings.statusLine = {
+          type: 'command',
+          command: cortexCommand
+        };
+
+        // Write settings using atomic write to prevent corruption
+        atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+        return {
+          configured: true,
+          skipped: false,
+          chained: true,
+          chainedCommand: existingCommand
+        };
+      } else {
+        // Skip (chain=false, old behavior)
+        return {
+          configured: false,
+          skipped: true,
+          existingCommand
+        };
+      }
     }
     // It's a Cortex statusline - update it (might be different path)
   }
@@ -792,6 +828,7 @@ export function configureClaudeStatusline(
 
   return {
     configured: true,
-    skipped: false
+    skipped: false,
+    chained: false
   };
 }

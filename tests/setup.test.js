@@ -76,7 +76,7 @@ describe('Statusline Configuration', () => {
     });
   });
 
-  test('skips statusline configuration when different statusline already exists', () => {
+  test('skips statusline configuration when different statusline already exists (chain=false)', () => {
     // Given: Settings file with a different statusline
     const existingStatusline = {
       type: 'command',
@@ -88,9 +88,9 @@ describe('Statusline Configuration', () => {
     };
     fs.writeFileSync(TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
 
-    // When: configureClaudeStatusline is called
+    // When: configureClaudeStatusline is called with chain=false
     const pluginRoot = '/path/to/cortex';
-    const result = configureClaudeStatusline(TEST_CLAUDE_SETTINGS_PATH, pluginRoot);
+    const result = configureClaudeStatusline(TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: false });
 
     // Then: Statusline is NOT overwritten
     assert.strictEqual(result.configured, false);
@@ -191,7 +191,7 @@ describe('Statusline Configuration', () => {
     assert.strictEqual(result.skipped, false);
   });
 
-  test('preserves existing settings when skipping statusline', () => {
+  test('preserves existing settings when skipping statusline (chain=false)', () => {
     // Given: Settings file with various settings and a different statusline
     const existingSettings = {
       model: 'opus',
@@ -203,9 +203,9 @@ describe('Statusline Configuration', () => {
     };
     fs.writeFileSync(TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
 
-    // When: configureClaudeStatusline is called (and skips)
+    // When: configureClaudeStatusline is called with chain=false (and skips)
     const pluginRoot = '/path/to/cortex';
-    configureClaudeStatusline(TEST_CLAUDE_SETTINGS_PATH, pluginRoot);
+    configureClaudeStatusline(TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: false });
 
     // Then: All settings are preserved exactly
     const savedSettings = JSON.parse(fs.readFileSync(TEST_CLAUDE_SETTINGS_PATH, 'utf8'));
@@ -271,5 +271,179 @@ describe('Statusline Configuration', () => {
       type: 'command',
       command: buildCortexStatuslineCommand(pluginRoot)
     });
+  });
+});
+
+// Test data directory for chaining tests - needs isolated Cortex config
+const CHAIN_TEST_DATA_DIR = path.join(os.tmpdir(), 'cortex-chain-test-' + Date.now());
+const CHAIN_TEST_CORTEX_DIR = path.join(CHAIN_TEST_DATA_DIR, '.cortex');
+const CHAIN_TEST_CLAUDE_DIR = path.join(CHAIN_TEST_DATA_DIR, '.claude');
+const CHAIN_TEST_CLAUDE_SETTINGS_PATH = path.join(CHAIN_TEST_CLAUDE_DIR, 'settings.json');
+
+describe('Statusline Chaining', () => {
+  let originalCortexDataDir;
+
+  before(() => {
+    // Save original env var
+    originalCortexDataDir = process.env.CORTEX_DATA_DIR;
+    // Set isolated Cortex data dir for these tests
+    process.env.CORTEX_DATA_DIR = CHAIN_TEST_CORTEX_DIR;
+    fs.mkdirSync(CHAIN_TEST_CLAUDE_DIR, { recursive: true });
+    fs.mkdirSync(CHAIN_TEST_CORTEX_DIR, { recursive: true });
+  });
+
+  after(() => {
+    // Restore original env var
+    if (originalCortexDataDir !== undefined) {
+      process.env.CORTEX_DATA_DIR = originalCortexDataDir;
+    } else {
+      delete process.env.CORTEX_DATA_DIR;
+    }
+    if (fs.existsSync(CHAIN_TEST_DATA_DIR)) {
+      fs.rmSync(CHAIN_TEST_DATA_DIR, { recursive: true, force: true });
+    }
+  });
+
+  afterEach(() => {
+    // Clean settings file between tests
+    if (fs.existsSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH)) {
+      fs.unlinkSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH);
+    }
+    // Clean Cortex config between tests
+    const cortexConfigPath = path.join(CHAIN_TEST_CORTEX_DIR, 'config.json');
+    if (fs.existsSync(cortexConfigPath)) {
+      fs.unlinkSync(cortexConfigPath);
+    }
+  });
+
+  test('chains existing statusline when detected', () => {
+    // Given: Settings file with a different statusline
+    const existingCommand = 'my-custom-statusline --fancy';
+    const existingSettings = {
+      statusLine: {
+        type: 'command',
+        command: existingCommand
+      }
+    };
+    fs.writeFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
+
+    // When: configureClaudeStatusline is called with chain=true
+    const pluginRoot = '/path/to/cortex';
+    const result = configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: true });
+
+    // Then: Statusline is configured and chained
+    assert.strictEqual(result.configured, true);
+    assert.strictEqual(result.skipped, false);
+    assert.strictEqual(result.chained, true);
+    assert.strictEqual(result.chainedCommand, existingCommand);
+
+    const savedSettings = JSON.parse(fs.readFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, 'utf8'));
+    assert.deepStrictEqual(savedSettings.statusLine, {
+      type: 'command',
+      command: buildCortexStatuslineCommand(pluginRoot)
+    });
+  });
+
+  test('returns chained=false when no existing statusline to chain', () => {
+    // Given: No settings file
+    assert.ok(!fs.existsSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH));
+
+    // When: configureClaudeStatusline is called with chain=true
+    const pluginRoot = '/path/to/cortex';
+    const result = configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: true });
+
+    // Then: Statusline is configured, no chaining
+    assert.strictEqual(result.configured, true);
+    assert.strictEqual(result.chained, false);
+    assert.strictEqual(result.chainedCommand, undefined);
+  });
+
+  test('does not chain Cortex statuslines (updates instead)', () => {
+    // Given: Settings file with existing Cortex statusline
+    const oldPluginRoot = '/old/path/to/cortex';
+    const existingSettings = {
+      statusLine: {
+        type: 'command',
+        command: buildCortexStatuslineCommand(oldPluginRoot)
+      }
+    };
+    fs.writeFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
+
+    // When: configureClaudeStatusline is called with chain=true
+    const newPluginRoot = '/new/path/to/cortex';
+    const result = configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, newPluginRoot, { chain: true });
+
+    // Then: Statusline is updated, not chained (Cortex statusline is not chained)
+    assert.strictEqual(result.configured, true);
+    assert.strictEqual(result.chained, false);
+
+    const savedSettings = JSON.parse(fs.readFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, 'utf8'));
+    assert.deepStrictEqual(savedSettings.statusLine, {
+      type: 'command',
+      command: buildCortexStatuslineCommand(newPluginRoot)
+    });
+  });
+
+  test('chain option defaults to true', () => {
+    // Given: Settings file with a different statusline
+    const existingCommand = 'my-custom-statusline --fancy';
+    const existingSettings = {
+      statusLine: {
+        type: 'command',
+        command: existingCommand
+      }
+    };
+    fs.writeFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
+
+    // When: configureClaudeStatusline is called without options
+    const pluginRoot = '/path/to/cortex';
+    const result = configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, pluginRoot);
+
+    // Then: Statusline is chained by default
+    assert.strictEqual(result.configured, true);
+    assert.strictEqual(result.chained, true);
+    assert.strictEqual(result.chainedCommand, existingCommand);
+  });
+
+  test('chain=false skips existing statusline (previous behavior)', () => {
+    // Given: Settings file with a different statusline
+    const existingCommand = 'my-custom-statusline --fancy';
+    const existingSettings = {
+      statusLine: {
+        type: 'command',
+        command: existingCommand
+      }
+    };
+    fs.writeFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
+
+    // When: configureClaudeStatusline is called with chain=false
+    const pluginRoot = '/path/to/cortex';
+    const result = configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: false });
+
+    // Then: Statusline is skipped (old behavior preserved)
+    assert.strictEqual(result.configured, false);
+    assert.strictEqual(result.skipped, true);
+    assert.strictEqual(result.existingCommand, existingCommand);
+  });
+
+  test('saves chainedCommand to Cortex config when chaining', () => {
+    // Given: Settings file with a different statusline
+    const existingCommand = 'my-custom-statusline --fancy';
+    const existingSettings = {
+      statusLine: {
+        type: 'command',
+        command: existingCommand
+      }
+    };
+    fs.writeFileSync(CHAIN_TEST_CLAUDE_SETTINGS_PATH, JSON.stringify(existingSettings), 'utf8');
+
+    // When: configureClaudeStatusline is called
+    const pluginRoot = '/path/to/cortex';
+    configureClaudeStatusline(CHAIN_TEST_CLAUDE_SETTINGS_PATH, pluginRoot, { chain: true });
+
+    // Then: chainedCommand is saved to Cortex config
+    const cortexConfigPath = path.join(CHAIN_TEST_CORTEX_DIR, 'config.json');
+    const cortexConfig = JSON.parse(fs.readFileSync(cortexConfigPath, 'utf8'));
+    assert.strictEqual(cortexConfig.statusline.chainedCommand, existingCommand);
   });
 });

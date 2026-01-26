@@ -104,6 +104,7 @@ export interface StatuslineConfig {
   showFragments: boolean;
   showLastArchive: boolean;
   showContext: boolean;
+  chainedCommand?: string;
 }
 
 export interface ArchiveConfig {

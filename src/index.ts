@@ -4,8 +4,8 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration, formatCompactNumber } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, buildCortexStatuslineCommand, type ConfigPreset } from './config.js';
-import { spawn } from 'child_process';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, buildCortexStatuslineCommand, getChainedStatuslineCommand, type ConfigPreset } from './config.js';
+import { spawn, execSync } from 'child_process';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
@@ -161,6 +161,50 @@ async function main() {
 }
 
 // ============================================================================
+// Chained Statusline Helper
+// ============================================================================
+
+const CHAINED_COMMAND_TIMEOUT_MS = 500;
+
+/**
+ * Execute the chained statusline command and return its output
+ * Returns null if no chained command, command fails, or times out
+ * Only uses the first line of output
+ *
+ * Note: Uses shell execution because statusline commands may contain
+ * pipes, redirects, or shell expansions. The command is from the user's
+ * own config (their original statusline), not untrusted input.
+ */
+function executeChainedStatusline(): string | null {
+  const chainedCommand = getChainedStatuslineCommand();
+  if (!chainedCommand) {
+    return null;
+  }
+
+  try {
+    // execSync with shell is appropriate here because:
+    // 1. The command is from user's own config, not untrusted input
+    // 2. Statusline commands may need shell features (pipes, expansions)
+    const output = execSync(chainedCommand, {
+      timeout: CHAINED_COMMAND_TIMEOUT_MS,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Only use the first line
+    const firstLine = output.trim().split('\n')[0];
+    return firstLine || null;
+  } catch (error) {
+    // Log error to debug but don't break statusline
+    debugLog('executeChainedStatusline', 'Chained command failed', {
+      command: chainedCommand,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+// ============================================================================
 // Statusline Handler
 // ============================================================================
 
@@ -209,7 +253,17 @@ async function handleStatusline() {
   // === Statusline display (only if enabled) ===
   if (config.statusline.enabled) {
     const stats = getStats(db);
-    const parts: string[] = [`${ANSI.brick}Ψ${ANSI.reset}`];
+    const parts: string[] = [];
+
+    // Execute chained statusline first (if configured)
+    const chainedOutput = executeChainedStatusline();
+    if (chainedOutput) {
+      parts.push(chainedOutput);
+      parts.push(`${ANSI.darkGray}|${ANSI.reset}`);
+    }
+
+    // Cortex statusline
+    parts.push(`${ANSI.brick}Ψ${ANSI.reset}`);
 
     // Memory count
     if (config.statusline.showFragments) {
@@ -768,10 +822,14 @@ async function handleSetup() {
   // Get plugin path - use CLAUDE_PLUGIN_ROOT env var or derive from current location
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
 
-  // Configure statusline (respects existing non-Cortex statuslines)
+  // Configure statusline (chains with existing non-Cortex statuslines)
   const statuslineResult = configureClaudeStatusline(claudeSettingsPath, pluginRoot);
 
-  if (statuslineResult.configured) {
+  if (statuslineResult.configured && statuslineResult.chained) {
+    console.log('  ✓ Statusline configured (chained with existing)');
+    console.log(`    Your original statusline will run first, followed by Cortex.`);
+    console.log(`    Original: ${statuslineResult.chainedCommand}`);
+  } else if (statuslineResult.configured) {
     console.log('  ✓ Statusline configured');
   } else if (statuslineResult.skipped) {
     console.log('  ⚠ Statusline skipped (existing configuration detected)');
