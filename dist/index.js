@@ -9587,6 +9587,9 @@ export {
   buildCortexStatuslineCommand,
   closeDb,
   configureClaudeStatusline,
+  formatDuration,
+  getContextPercent,
+  getProjectId,
   handleCheckDb,
   handleConfigure,
   handlePostTool,
@@ -9602,6 +9605,7 @@ export {
   initDb,
   loadAutoSaveState,
   markAutoSaved,
+  readStdinWithResult,
   resetAutoSaveState,
   shouldAutoSave
 };
