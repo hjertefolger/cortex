@@ -4376,6 +4376,48 @@ function getLastSaveTimeAgo(transcriptPath) {
 function resetAutoSaveState() {
   saveAutoSaveState({ ...DEFAULT_AUTO_SAVE_STATE });
 }
+function buildCortexStatuslineCommand(pluginRoot) {
+  return `node ${pluginRoot}/dist/index.js statusline`;
+}
+function isCortexStatusline(command) {
+  return command.includes("index.js statusline");
+}
+function configureClaudeStatusline(settingsPath, pluginRoot, options = {}) {
+  const { force = false } = options;
+  const cortexCommand = buildCortexStatuslineCommand(pluginRoot);
+  let settings = {};
+  const settingsDir = path.dirname(settingsPath);
+  if (!fs.existsSync(settingsDir)) {
+    fs.mkdirSync(settingsDir, { recursive: true });
+  }
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    } catch {
+      settings = {};
+    }
+  }
+  const existingStatusline = settings.statusLine;
+  if (existingStatusline?.command && !force) {
+    const existingCommand = existingStatusline.command || "";
+    if (!isCortexStatusline(existingCommand)) {
+      return {
+        configured: false,
+        skipped: true,
+        existingCommand
+      };
+    }
+  }
+  settings.statusLine = {
+    type: "command",
+    command: cortexCommand
+  };
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return {
+    configured: true,
+    skipped: false
+  };
+}
 var StatuslineConfigSchema, ArchiveConfigSchema, AutosaveConfigSchema, RestorationConfigSchema, SetupConfigSchema, ConfigSchema, DEFAULT_STATUSLINE_CONFIG, DEFAULT_ARCHIVE_CONFIG, DEFAULT_AUTOSAVE_CONFIG, DEFAULT_RESTORATION_CONFIG, DEFAULT_SETUP_CONFIG, DEFAULT_CONFIG, CONFIG_PRESETS, GLOBAL_SESSION_KEY, DEFAULT_AUTO_SAVE_STATE;
 var init_config = __esm({
   "src/config.ts"() {
@@ -9340,24 +9382,21 @@ async function handleSetup() {
   console.log("  \u23F3 Configuring statusline...");
   const claudeDir = path3.join(os2.homedir(), ".claude");
   const claudeSettingsPath = path3.join(claudeDir, "settings.json");
-  if (!fs5.existsSync(claudeDir)) {
-    fs5.mkdirSync(claudeDir, { recursive: true });
-  }
-  let claudeSettings = {};
-  if (fs5.existsSync(claudeSettingsPath)) {
-    try {
-      claudeSettings = JSON.parse(fs5.readFileSync(claudeSettingsPath, "utf8"));
-    } catch {
-      claudeSettings = {};
-    }
-  }
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || pluginDir;
-  claudeSettings.statusLine = {
-    type: "command",
-    command: `node ${pluginRoot}/dist/index.js statusline`
-  };
-  fs5.writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2), "utf8");
-  console.log("  \u2713 Statusline configured");
+  const statuslineResult = configureClaudeStatusline(claudeSettingsPath, pluginRoot);
+  if (statuslineResult.configured) {
+    console.log("  \u2713 Statusline configured");
+  } else if (statuslineResult.skipped) {
+    console.log("  \u26A0 Statusline skipped (existing configuration detected)");
+    console.log("");
+    console.log(`${ANSI.yellow}Existing statusline:${ANSI.reset}`);
+    console.log(`  ${statuslineResult.existingCommand}`);
+    console.log("");
+    console.log("To use Cortex statusline instead, either:");
+    console.log("  1. Remove the existing statusLine from ~/.claude/settings.json");
+    console.log("  2. Or manually set it to:");
+    console.log(`     "statusLine": { "type": "command", "command": "node ${pluginRoot}/dist/index.js statusline" }`);
+  }
   markSetupComplete();
   console.log("  \u2713 Setup marked complete");
   const stdin = await readStdin();
@@ -9483,10 +9522,16 @@ async function handleCheckDb() {
     process.exit(1);
   }
 }
-main();
+var isDirectRun = process.argv[1]?.endsWith("index.js") || process.argv[1]?.endsWith("index.ts") || process.env.CORTEX_CLI === "1";
+var isTestImport = process.argv[1]?.includes("node:test") || process.argv[1]?.includes("/test") || process.env.NODE_TEST_CONTEXT;
+if (isDirectRun || !isTestImport && process.argv.length > 1) {
+  main();
+}
 export {
   archiveSession,
+  buildCortexStatuslineCommand,
   closeDb,
+  configureClaudeStatusline,
   handleCheckDb,
   handleConfigure,
   handlePostTool,

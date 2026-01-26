@@ -766,7 +766,7 @@ export function configureClaudeStatusline(
   // Check if statusline already exists
   const existingStatusline = settings.statusLine as { type?: string; command?: string } | undefined;
 
-  if (existingStatusline && !force) {
+  if (existingStatusline?.command && !force) {
     const existingCommand = existingStatusline.command || '';
 
     // Check if existing statusline is a Cortex command
@@ -787,8 +787,8 @@ export function configureClaudeStatusline(
     command: cortexCommand
   };
 
-  // Write settings
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  // Write settings using atomic write to prevent corruption
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2));
 
   return {
     configured: true,

@@ -4,7 +4,7 @@
  */
 
 import { readStdin, getProjectId, getContextPercent, formatDuration, formatCompactNumber } from './stdin.js';
-import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, type ConfigPreset } from './config.js';
+import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, buildCortexStatuslineCommand, type ConfigPreset } from './config.js';
 import { spawn } from 'child_process';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
 import { verifyModel, getModelName, embedQuery } from './embeddings.js';
@@ -962,8 +962,22 @@ export {
   archiveSession,
   initDb,
   closeDb,
-  hybridSearch
+  hybridSearch,
+  // Export statusline configuration for testing
+  configureClaudeStatusline,
+  buildCortexStatuslineCommand
 };
 
-// Run main
-main();
+// Run main only when executed directly (not when imported)
+// Check if this file is the entry point by looking for CORTEX_CLI environment marker
+// or if running as CLI (has command line args that look like CLI usage)
+const isDirectRun = process.argv[1]?.endsWith('index.js') ||
+                    process.argv[1]?.endsWith('index.ts') ||
+                    process.env.CORTEX_CLI === '1';
+const isTestImport = process.argv[1]?.includes('node:test') ||
+                     process.argv[1]?.includes('/test') ||
+                     process.env.NODE_TEST_CONTEXT;
+
+if (isDirectRun || (!isTestImport && process.argv.length > 1)) {
+  main();
+}
