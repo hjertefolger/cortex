@@ -1,9 +1,9 @@
 # Cortex
 
-[![Version](https://img.shields.io/badge/version-2.0.3-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
-[![Tests](https://img.shields.io/badge/tests-187%20passing-success.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-231%20passing-success.svg)](#testing)
 [![TypeScript](https://img.shields.io/badge/typescript-strict-blue.svg)](tsconfig.json)
 
 **Persistent local memory for Claude Code.** Longer sessions. Cross-session recall. Zero cloud.
@@ -350,9 +350,9 @@ To test against a real production transcript (35MB+):
 ✔ Auto-Save Logic (10 tests)
 ✔ E2E Transcript Replay (2 tests)
 
-ℹ tests 215
-ℹ suites 13
-ℹ pass 215
+ℹ tests 231
+ℹ suites 54
+ℹ pass 231
 ℹ fail 0
 ```
 
@@ -446,6 +446,12 @@ sqlite3 ~/.cortex/memory.db "SELECT id, substr(content, 1, 50), timestamp FROM m
 ```bash
 ls -la ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5/
 ```
+
+## Contributors
+
+Thanks to everyone who has contributed to Cortex!
+
+- [@mikelane](https://github.com/mikelane) — Statusline chaining ([#1](https://github.com/hjertefolger/cortex/pull/1))
 
 ## License
 
