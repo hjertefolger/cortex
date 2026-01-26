@@ -1,7 +1,7 @@
 
 import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { readStdinWithResult, getContextPercent, getProjectId, formatDuration } from '../src/stdin.js';
+import { readStdinWithResult, getContextPercent, getProjectId, formatDuration } from '../dist/index.js';
 
 describe('Stdin Module', () => {
     describe('readStdinWithResult', () => {

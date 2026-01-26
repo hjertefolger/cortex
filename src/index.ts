@@ -3,7 +3,7 @@
  * Handles statusline display, CLI commands, and hook events
  */
 
-import { readStdin, getProjectId, getContextPercent, formatDuration, formatCompactNumber } from './stdin.js';
+import { readStdin, readStdinWithResult, getProjectId, getContextPercent, formatDuration, formatCompactNumber } from './stdin.js';
 import { loadConfig, ensureDataDir, applyPreset, getDataDir, isSetupComplete, markSetupComplete, saveCurrentSession, shouldAutoSave, markAutoSaved, resetAutoSaveState, loadAutoSaveState, isAutoSaveStateCurrentSession, wasRecentlySaved, isSaving, setSavingState, isShowingSavingIndicator, getLastSaveTimeAgo, configureClaudeStatusline, buildCortexStatuslineCommand, getChainedStatuslineCommand, type ConfigPreset } from './config.js';
 import { spawn, execSync } from 'child_process';
 import { initDb, getStats, getProjectStats, formatBytes, closeDb, saveDb, searchByVector, validateDatabase, isFts5Enabled, getBackupFiles } from './database.js';
@@ -1023,7 +1023,12 @@ export {
   hybridSearch,
   // Export statusline configuration for testing
   configureClaudeStatusline,
-  buildCortexStatuslineCommand
+  buildCortexStatuslineCommand,
+  // Export stdin helpers for testing
+  readStdinWithResult,
+  getContextPercent,
+  getProjectId,
+  formatDuration
 };
 
 // Run main only when executed directly (not when imported)
