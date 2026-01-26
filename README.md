@@ -39,7 +39,7 @@ Inside a Claude Code instance:
 **Step 2: Install the plugin**
 
 <details>
-<summary><strong>Linux users: Click here first</strong></summary>
+<summary><strong>⚠️ Linux users: Click here first</strong></summary>
 
 On Linux, `/tmp` is often a separate filesystem (tmpfs), which causes plugin installation to fail with:
 ```
