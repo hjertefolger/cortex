@@ -212,6 +212,7 @@ export type CommandName =
   | 'statusline'
   | 'session-start'
   | 'session-end'
+  | 'background-save'
   | 'monitor'
   | 'context-check'
   | 'pre-compact'
