@@ -1,6 +1,6 @@
 # Cortex
 
-[![Version](https://img.shields.io/badge/version-2.1.1-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.1.2-blue.svg)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
 [![Tests](https://img.shields.io/badge/tests-231%20passing-success.svg)](#testing)
@@ -240,7 +240,7 @@ cortex_save()
 
 | Hook | Trigger | Behavior |
 |------|---------|----------|
-| `SessionStart` | New session | Shows memory count, injects restoration context |
+| `SessionStart` | New session | Shows memory count, injects awareness + restoration context |
 | `PostToolUse` | After any tool | Monitors context %, triggers auto-save |
 | `PreCompact` | Before `/clear` | Archives session, prepares restoration |
 
@@ -272,6 +272,11 @@ cortex_save()
     "tokenBudget": 2000,
     "messageCount": 5,
     "turnCount": 3
+  },
+  "awareness": {
+    "enabled": false,
+    "userName": null,
+    "timezone": null
   }
 }
 ```
@@ -293,6 +298,9 @@ cortex_save()
 | `autosave.onSessionEnd` | true | Archive session on exit (`Ctrl+C` x2) |
 | `restoration.tokenBudget` | 2000 | Max tokens for key decision restoration |
 | `restoration.turnCount` | 3 | Number of raw conversation turns to restore |
+| `awareness.enabled` | false | Inject user/date/time at session start and after clear |
+| `awareness.userName` | null | User name shown in awareness context |
+| `awareness.timezone` | null | IANA timezone (null = auto-detect, `"off"` = omit date/time) |
 
 ## Database Schema
 

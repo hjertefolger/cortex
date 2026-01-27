@@ -192,6 +192,11 @@ Config file: `~/.cortex/config.json`
   "setup": {
     "completed": true,
     "completedAt": "2024-01-15T10:30:00Z"
+  },
+  "awareness": {
+    "enabled": false,
+    "userName": null,
+    "timezone": null
   }
 }
 ```

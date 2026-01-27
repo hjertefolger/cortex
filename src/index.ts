@@ -11,7 +11,7 @@ import { verifyModel, getModelName, embedQuery } from './embeddings.js';
 import { hybridSearch, formatSearchResults } from './search.js';
 import { archiveSession, formatArchiveResult, buildRestorationContext, formatRestorationContext } from './archive.js';
 import { startSession, updateContextPercent, recordSavePoint, recordClear, getCurrentSession } from './analytics.js';
-import type { StdinData, CommandName } from './types.js';
+import type { StdinData, CommandName, Config } from './types.js';
 
 // ============================================================================
 // ANSI Colors for Terminal Output
@@ -356,6 +356,52 @@ function createContextStrip(percent: number): string {
 // Hook Handlers
 // ============================================================================
 
+function buildAwarenessContext(config: Config): string | null {
+  if (!config.awareness.enabled) return null;
+
+  const lines: string[] = [];
+  if (config.awareness.userName) {
+    lines.push(`User: ${config.awareness.userName}`);
+  }
+
+  if (config.awareness.timezone !== 'off') {
+    const tz = config.awareness.timezone
+      || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const now = new Date();
+    let formattedDate: string;
+    let formattedTime: string;
+    let resolvedTz = tz;
+
+    try {
+      formattedDate = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        timeZone: tz,
+      }).format(now);
+      formattedTime = new Intl.DateTimeFormat('en-US', {
+        hour: '2-digit', minute: '2-digit', hour12: true,
+        timeZone: tz,
+      }).format(now);
+    } catch {
+      // Invalid timezone — fall back to auto-detect
+      resolvedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      formattedDate = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        timeZone: resolvedTz,
+      }).format(now);
+      formattedTime = new Intl.DateTimeFormat('en-US', {
+        hour: '2-digit', minute: '2-digit', hour12: true,
+        timeZone: resolvedTz,
+      }).format(now);
+    }
+
+    lines.push(`Date: ${formattedDate}`);
+    lines.push(`Time: ${formattedTime} (${resolvedTz})`);
+  }
+
+  return lines.join('\n');
+}
+
 async function handleSessionStart() {
   debugLog('handleSessionStart', 'Hook invoked');
   const stdin = await readStdin();
@@ -404,11 +450,20 @@ async function handleSessionStart() {
     console.log(`${ANSI.brick}Ψ${ANSI.reset} ${ANSI.cyan}Session started`);
   }
 
+  // Awareness context
+  const awareness = buildAwarenessContext(config);
+
   // Show restoration context if we have any content (turns or memories)
-  if (restoration.hasContent) {
+  if (restoration.hasContent || awareness) {
     console.log('');
     console.log(`${ANSI.dim}--- Restoration Context ---${ANSI.reset}`);
-    console.log(formatRestorationContext(restoration));
+    if (awareness) {
+      console.log(awareness);
+      if (restoration.hasContent) console.log('');
+    }
+    if (restoration.hasContent) {
+      console.log(formatRestorationContext(restoration));
+    }
     console.log(`${ANSI.dim}---------------------------${ANSI.reset}`);
   }
 }
@@ -540,8 +595,14 @@ async function handleSmartCompact() {
   recordClear();
 
   // 4. Output restoration context for Claude to see after clear
+  const awareness = buildAwarenessContext(config);
+
   console.log('');
   console.log(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
+  if (awareness) {
+    console.log(awareness);
+    if (restoration.hasContent) console.log('');
+  }
   console.log(formatRestorationContext(restoration));
   console.log(`${ANSI.cyan}===========================${ANSI.reset}`);
   console.log('');
@@ -627,10 +688,18 @@ async function handlePreCompact() {
     tokenBudget: config.restoration.tokenBudget,
   });
 
-  if (restoration.hasContent) {
+  const awareness = buildAwarenessContext(config);
+
+  if (restoration.hasContent || awareness) {
     console.log('');
     console.log(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
-    console.log(formatRestorationContext(restoration));
+    if (awareness) {
+      console.log(awareness);
+      if (restoration.hasContent) console.log('');
+    }
+    if (restoration.hasContent) {
+      console.log(formatRestorationContext(restoration));
+    }
     console.log(`${ANSI.cyan}===========================${ANSI.reset}`);
   }
 }

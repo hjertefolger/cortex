@@ -140,12 +140,19 @@ export interface SetupConfig {
   completedAt: string | null;
 }
 
+export interface AwarenessConfig {
+  enabled: boolean;
+  userName: string | null;
+  timezone: string | null;
+}
+
 export interface Config {
   statusline: StatuslineConfig;
   archive: ArchiveConfig;
   autosave: AutosaveConfig;
   restoration: RestorationConfig;
   setup: SetupConfig;
+  awareness: AwarenessConfig;
 }
 
 // ============================================================================

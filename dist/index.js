@@ -6545,12 +6545,18 @@ var SetupConfigSchema = external_exports.object({
   completed: external_exports.boolean(),
   completedAt: external_exports.string().nullable()
 });
+var AwarenessConfigSchema = external_exports.object({
+  enabled: external_exports.boolean(),
+  userName: external_exports.string().nullable(),
+  timezone: external_exports.string().nullable()
+});
 var ConfigSchema = external_exports.object({
   statusline: StatuslineConfigSchema,
   archive: ArchiveConfigSchema,
   autosave: AutosaveConfigSchema,
   restoration: RestorationConfigSchema,
-  setup: SetupConfigSchema
+  setup: SetupConfigSchema,
+  awareness: AwarenessConfigSchema
 });
 var DEFAULT_STATUSLINE_CONFIG = {
   enabled: true,
@@ -6580,12 +6586,18 @@ var DEFAULT_SETUP_CONFIG = {
   completed: false,
   completedAt: null
 };
+var DEFAULT_AWARENESS_CONFIG = {
+  enabled: false,
+  userName: null,
+  timezone: null
+};
 var DEFAULT_CONFIG = {
   statusline: DEFAULT_STATUSLINE_CONFIG,
   archive: DEFAULT_ARCHIVE_CONFIG,
   autosave: DEFAULT_AUTOSAVE_CONFIG,
   restoration: DEFAULT_RESTORATION_CONFIG,
-  setup: DEFAULT_SETUP_CONFIG
+  setup: DEFAULT_SETUP_CONFIG,
+  awareness: DEFAULT_AWARENESS_CONFIG
 };
 function getDataDir() {
   if (process.env.CORTEX_DATA_DIR) {
@@ -6694,6 +6706,11 @@ var CONFIG_PRESETS = {
       tokenBudget: 3e3,
       messageCount: 5,
       turnCount: 5
+    },
+    awareness: {
+      enabled: true,
+      userName: null,
+      timezone: null
     }
   },
   essential: {
@@ -8876,6 +8893,54 @@ function createContextStrip(percent) {
   const emptyCircles = "\u25CB".repeat(empty);
   return `${color}${filledCircles}${ANSI.dim}${emptyCircles}${ANSI.reset} ${percent}%`;
 }
+function buildAwarenessContext(config) {
+  if (!config.awareness.enabled)
+    return null;
+  const lines = [];
+  if (config.awareness.userName) {
+    lines.push(`User: ${config.awareness.userName}`);
+  }
+  if (config.awareness.timezone !== "off") {
+    const tz = config.awareness.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const now = /* @__PURE__ */ new Date();
+    let formattedDate;
+    let formattedTime;
+    let resolvedTz = tz;
+    try {
+      formattedDate = new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        timeZone: tz
+      }).format(now);
+      formattedTime = new Intl.DateTimeFormat("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: tz
+      }).format(now);
+    } catch {
+      resolvedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      formattedDate = new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        timeZone: resolvedTz
+      }).format(now);
+      formattedTime = new Intl.DateTimeFormat("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: resolvedTz
+      }).format(now);
+    }
+    lines.push(`Date: ${formattedDate}`);
+    lines.push(`Time: ${formattedTime} (${resolvedTz})`);
+  }
+  return lines.join("\n");
+}
 async function handleSessionStart() {
   debugLog("handleSessionStart", "Hook invoked");
   const stdin = await readStdin();
@@ -8906,10 +8971,18 @@ async function handleSessionStart() {
   } else {
     console.log(`${ANSI.brick}\u03A8${ANSI.reset} ${ANSI.cyan}Session started`);
   }
-  if (restoration.hasContent) {
+  const awareness = buildAwarenessContext(config);
+  if (restoration.hasContent || awareness) {
     console.log("");
     console.log(`${ANSI.dim}--- Restoration Context ---${ANSI.reset}`);
-    console.log(formatRestorationContext(restoration));
+    if (awareness) {
+      console.log(awareness);
+      if (restoration.hasContent)
+        console.log("");
+    }
+    if (restoration.hasContent) {
+      console.log(formatRestorationContext(restoration));
+    }
     console.log(`${ANSI.dim}---------------------------${ANSI.reset}`);
   }
 }
@@ -9019,10 +9092,18 @@ async function handlePreCompact() {
     messageCount: config.restoration.messageCount,
     tokenBudget: config.restoration.tokenBudget
   });
-  if (restoration.hasContent) {
+  const awareness = buildAwarenessContext(config);
+  if (restoration.hasContent || awareness) {
     console.log("");
     console.log(`${ANSI.cyan}=== Restoration Context ===${ANSI.reset}`);
-    console.log(formatRestorationContext(restoration));
+    if (awareness) {
+      console.log(awareness);
+      if (restoration.hasContent)
+        console.log("");
+    }
+    if (restoration.hasContent) {
+      console.log(formatRestorationContext(restoration));
+    }
     console.log(`${ANSI.cyan}===========================${ANSI.reset}`);
   }
 }

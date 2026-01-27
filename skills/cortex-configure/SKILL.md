@@ -19,6 +19,7 @@ Offer quick presets for common configurations:
 - Statusline: enabled
 - Auto-archive: enabled
 - Auto-save threshold: 70%
+- Awareness: enabled
 
 **Essential** - Core features only
 - Statusline: enabled
@@ -49,6 +50,25 @@ Allow fine-tuning of specific settings:
 4. **Statusline Enabled** (true/false)
    - Show Cortex in status line
    - Default: true
+
+5. **Awareness** (section)
+   - Injects user/time/date context at session start and after context clear
+
+   **Step 1: enabled** (true/false) — ask first, before anything else:
+   - If currently enabled: "Keep enabled", "Disable"
+   - If currently disabled: "Enable", "Keep disabled"
+   - If the user disables awareness, skip userName and timezone questions entirely.
+
+   **Step 2: userName** — only ask if awareness is enabled:
+   - If already set (show current value): "Keep current", "Change" (ask for new name), "Turn off" (set null)
+   - If not set: "Set a name" (ask for name string), "Skip" (keep null)
+   - IMPORTANT: Never pre-fill or guess the user's name. Always let the user type it.
+
+   **Step 3: timezone** — only ask if awareness is enabled:
+   - "Auto-detect" → set null (uses system timezone)
+   - "Custom" → ask user for IANA timezone string (e.g. "America/New_York")
+   - "Off" → set "off" (omit Date/Time lines entirely, only show User if set)
+   - IMPORTANT: Never pre-fill a timezone value. Let the user choose and type.
 
 ## Usage Flow
 
@@ -86,6 +106,11 @@ Location: `~/.cortex/config.json`
     "autoSaveThreshold": 70,
     "restorationTokenBudget": 2000,
     "restorationMessageCount": 5
+  },
+  "awareness": {
+    "enabled": false,
+    "userName": null,
+    "timezone": null
   }
 }
 ```

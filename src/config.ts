@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { z } from 'zod';
-import type { Config, StatuslineConfig, ArchiveConfig, AutosaveConfig, RestorationConfig, SetupConfig } from './types.js';
+import type { Config, StatuslineConfig, ArchiveConfig, AutosaveConfig, RestorationConfig, SetupConfig, AwarenessConfig } from './types.js';
 
 // ============================================================================
 // Zod Schemas for Config Validation
@@ -46,12 +46,19 @@ const SetupConfigSchema = z.object({
   completedAt: z.string().nullable(),
 });
 
+const AwarenessConfigSchema = z.object({
+  enabled: z.boolean(),
+  userName: z.string().nullable(),
+  timezone: z.string().nullable(),
+});
+
 const ConfigSchema = z.object({
   statusline: StatuslineConfigSchema,
   archive: ArchiveConfigSchema,
   autosave: AutosaveConfigSchema,
   restoration: RestorationConfigSchema,
   setup: SetupConfigSchema,
+  awareness: AwarenessConfigSchema,
 });
 
 // ============================================================================
@@ -90,12 +97,19 @@ export const DEFAULT_SETUP_CONFIG: SetupConfig = {
   completedAt: null,
 };
 
+export const DEFAULT_AWARENESS_CONFIG: AwarenessConfig = {
+  enabled: false,
+  userName: null,
+  timezone: null,
+};
+
 export const DEFAULT_CONFIG: Config = {
   statusline: DEFAULT_STATUSLINE_CONFIG,
   archive: DEFAULT_ARCHIVE_CONFIG,
   autosave: DEFAULT_AUTOSAVE_CONFIG,
   restoration: DEFAULT_RESTORATION_CONFIG,
   setup: DEFAULT_SETUP_CONFIG,
+  awareness: DEFAULT_AWARENESS_CONFIG,
 };
 
 // ============================================================================
@@ -289,6 +303,11 @@ export const CONFIG_PRESETS: Record<ConfigPreset, Partial<Config>> = {
       tokenBudget: 3000,
       messageCount: 5,
       turnCount: 5,
+    },
+    awareness: {
+      enabled: true,
+      userName: null,
+      timezone: null,
     },
   },
   essential: {
