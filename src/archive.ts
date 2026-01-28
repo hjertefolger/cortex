@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as readline from 'readline';
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type { Database } from 'bun:sqlite';
 import { insertMemory, contentExists, saveDb, insertTurn, getRecentTurns, getRecentMemories, upsertSessionSummary, getSessionProgress, updateSessionProgress, clearOldTurns } from './database.js';
 import { embedBatch } from './embeddings.js';
 import { loadConfig } from './config.js';
@@ -519,7 +519,7 @@ function extractSessionInsights(messages: TranscriptMessage[]): {
  * Append new conversation turns to the session history
  */
 export async function appendSessionTurns(
-  db: SqlJsDatabase,
+  db: Database,
   newMessages: TranscriptMessage[],
   projectId: string | null,
   sessionId: string
@@ -567,7 +567,7 @@ export async function appendSessionTurns(
  * Archive a transcript to the database
  */
 export async function archiveSession(
-  db: SqlJsDatabase,
+  db: Database,
   transcriptPath: string,
   projectId: string | null,
   options: {
@@ -742,7 +742,7 @@ function getSessionId(transcriptPath: string): string {
  * Archive content directly (for manual archiving)
  */
 export async function archiveContent(
-  db: SqlJsDatabase,
+  db: Database,
   content: string,
   projectId: string | null
 ): Promise<{ success: boolean; isDuplicate: boolean }> {
@@ -812,7 +812,7 @@ export interface RestorationContext {
  * Prioritizes raw turns for precise context, supplements with semantic fragments
  */
 export async function buildRestorationContext(
-  db: SqlJsDatabase,
+  db: Database,
   projectId: string | null,
   options: {
     messageCount?: number;

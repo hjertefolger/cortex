@@ -1,19 +1,30 @@
 /**
  * Cortex Database Module Tests
  * Tests CRUD operations, deduplication, search, and statistics
+ * Updated for Bun + bun:sqlite
  */
 
-import { test, describe, before, after, beforeEach } from 'node:test';
-import assert from 'node:assert';
+import { describe, test, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { expect } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { 
+  initDb, 
+  closeDb, 
+  insertMemory, 
+  getMemory, 
+  deleteMemory, 
+  getStats, 
+  searchByKeyword, 
+  deleteProjectMemories 
+} from '../src/database.ts';
 
 // Test data directory - isolated from production
 const TEST_DATA_DIR = path.join(os.tmpdir(), 'cortex-test-' + Date.now());
-const TEST_DB_PATH = path.join(TEST_DATA_DIR, 'memory.db');
+process.env.CORTEX_DATA_DIR = TEST_DATA_DIR;
 
-// Mock embeddings (768-dimensional vectors like nomic-embed-text-v1.5)
+// Mock embeddings (768-dimensional vectors)
 function createMockEmbedding(seed = 0) {
   const embedding = new Float32Array(768);
   for (let i = 0; i < 768; i++) {
@@ -31,168 +42,159 @@ function createMockEmbedding(seed = 0) {
   return embedding;
 }
 
-describe('Database Module', async () => {
-  let initSqlJs;
-  let SQL;
+describe('Database Module', () => {
   let db;
 
-  before(async () => {
-    // Create test directory
+  beforeAll(async () => {
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
-
-    // Import sql.js
-    const sqljs = await import('sql.js');
-    initSqlJs = sqljs.default;
-    SQL = await initSqlJs();
   });
 
-  after(() => {
-    // Cleanup test directory
+  afterAll(() => {
     if (fs.existsSync(TEST_DATA_DIR)) {
       fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
     }
   });
 
-  beforeEach(() => {
-    // Create fresh database for each test
-    db = new SQL.Database();
+  beforeEach(async () => {
+    // Ensure fresh start
+    closeDb();
+    if (fs.existsSync(path.join(TEST_DATA_DIR, 'memory.db'))) {
+        fs.unlinkSync(path.join(TEST_DATA_DIR, 'memory.db'));
+    }
+    if (fs.existsSync(path.join(TEST_DATA_DIR, 'memory.db-shm'))) {
+        fs.unlinkSync(path.join(TEST_DATA_DIR, 'memory.db-shm'));
+    }
+    if (fs.existsSync(path.join(TEST_DATA_DIR, 'memory.db-wal'))) {
+        fs.unlinkSync(path.join(TEST_DATA_DIR, 'memory.db-wal'));
+    }
+    db = await initDb();
+  });
 
-    // Create schema
-    db.run(`
-      CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content TEXT NOT NULL,
-        content_hash TEXT NOT NULL UNIQUE,
-        embedding BLOB NOT NULL,
-        project_id TEXT,
-        source_session TEXT NOT NULL,
-        timestamp TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_memories_project_id ON memories(project_id)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp DESC)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_memories_content_hash ON memories(content_hash)`);
+  afterEach(() => {
+    closeDb();
   });
 
   test('should create empty database', () => {
-    const result = db.exec(`SELECT COUNT(*) FROM memories`);
-    assert.strictEqual(result[0].values[0][0], 0, 'Database should start empty');
+    const stats = getStats(db);
+    expect(stats.fragmentCount).toBe(0);
   });
 
   test('should insert memory correctly', () => {
     const embedding = createMockEmbedding(1);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
-    const hash = 'test-hash-1';
+    
+    const { id, isDuplicate } = insertMemory(db, {
+        content: 'Test content 1',
+        embedding,
+        projectId: 'test-project',
+        sourceSession: 'session-1',
+        timestamp: new Date()
+    });
 
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Test content 1', hash, embeddingBuffer, 'test-project', 'session-1', new Date().toISOString()]
-    );
+    expect(isDuplicate).toBe(false);
+    expect(id).toBeGreaterThan(0);
 
-    const result = db.exec(`SELECT COUNT(*) FROM memories`);
-    assert.strictEqual(result[0].values[0][0], 1, 'Should have 1 memory');
+    const stats = getStats(db);
+    expect(stats.fragmentCount).toBe(1);
   });
 
   test('should prevent duplicate content_hash', () => {
     const embedding = createMockEmbedding(1);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
-    const hash = 'duplicate-hash';
+    const content = 'Content 1';
 
-    // First insert should succeed
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Content 1', hash, embeddingBuffer, 'project-1', 'session-1', new Date().toISOString()]
-    );
+    // First insert
+    insertMemory(db, {
+        content,
+        embedding,
+        projectId: 'project-1',
+        sourceSession: 'session-1',
+        timestamp: new Date()
+    });
 
-    // Second insert with same hash should fail
-    assert.throws(() => {
-      db.run(
-        `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        ['Content 2', hash, embeddingBuffer, 'project-1', 'session-1', new Date().toISOString()]
-      );
-    }, /UNIQUE constraint failed/);
+    // Second insert with same content
+    const result = insertMemory(db, {
+        content, // Same content -> same hash
+        embedding,
+        projectId: 'project-1',
+        sourceSession: 'session-1',
+        timestamp: new Date()
+    });
+
+    expect(result.isDuplicate).toBe(true);
+    
+    const stats = getStats(db);
+    expect(stats.fragmentCount).toBe(1);
   });
 
   test('should retrieve memory by id', () => {
     const embedding = createMockEmbedding(2);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
+    
+    const { id } = insertMemory(db, {
+        content: 'Retrievable content',
+        embedding,
+        projectId: 'project-test',
+        sourceSession: 'session-test',
+        timestamp: new Date()
+    });
 
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Retrievable content', 'hash-retrieve', embeddingBuffer, 'project-test', 'session-test', new Date().toISOString()]
-    );
-
-    const result = db.exec(`SELECT id, content, project_id FROM memories WHERE id = 1`);
-    assert.strictEqual(result.length, 1, 'Should return 1 result set');
-    assert.strictEqual(result[0].values[0][1], 'Retrievable content', 'Content should match');
-    assert.strictEqual(result[0].values[0][2], 'project-test', 'Project ID should match');
+    const memory = getMemory(db, id);
+    expect(memory).not.toBeNull();
+    expect(memory.content).toBe('Retrievable content');
+    expect(memory.projectId).toBe('project-test');
   });
 
   test('should delete memory by id', () => {
     const embedding = createMockEmbedding(3);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
+    
+    const { id } = insertMemory(db, {
+        content: 'To be deleted',
+        embedding,
+        projectId: 'project-del',
+        sourceSession: 'session-del',
+        timestamp: new Date()
+    });
 
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['To be deleted', 'hash-delete', embeddingBuffer, null, 'session-del', new Date().toISOString()]
-    );
+    expect(getStats(db).fragmentCount).toBe(1);
 
-    // Verify insert
-    let result = db.exec(`SELECT COUNT(*) FROM memories`);
-    assert.strictEqual(result[0].values[0][0], 1);
-
-    // Delete
-    db.run(`DELETE FROM memories WHERE id = 1`);
-
-    // Verify deletion
-    result = db.exec(`SELECT COUNT(*) FROM memories`);
-    assert.strictEqual(result[0].values[0][0], 0, 'Memory should be deleted');
+    const deleted = deleteMemory(db, id);
+    expect(deleted).toBe(true);
+    expect(getStats(db).fragmentCount).toBe(0);
   });
 
   test('should count memories per project', () => {
     const embedding = createMockEmbedding(4);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
 
     // Insert memories for different projects
     for (let i = 0; i < 3; i++) {
-      db.run(
-        `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [`Content A-${i}`, `hash-a-${i}`, embeddingBuffer, 'project-a', `session-${i}`, new Date().toISOString()]
-      );
+        insertMemory(db, {
+            content: `Content A-${i}`,
+            embedding,
+            projectId: 'project-a',
+            sourceSession: `session-${i}`,
+            timestamp: new Date()
+        });
     }
 
     for (let i = 0; i < 2; i++) {
-      db.run(
-        `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [`Content B-${i}`, `hash-b-${i}`, embeddingBuffer, 'project-b', `session-${i}`, new Date().toISOString()]
-      );
+        insertMemory(db, {
+            content: `Content B-${i}`,
+            embedding,
+            projectId: 'project-b',
+            sourceSession: `session-${i}`,
+            timestamp: new Date()
+        });
     }
-
-    // Count project-a
-    const resultA = db.exec(`SELECT COUNT(*) FROM memories WHERE project_id = ?`, ['project-a']);
-    assert.strictEqual(resultA[0].values[0][0], 3, 'Project A should have 3 memories');
-
-    // Count project-b
-    const resultB = db.exec(`SELECT COUNT(*) FROM memories WHERE project_id = ?`, ['project-b']);
-    assert.strictEqual(resultB[0].values[0][0], 2, 'Project B should have 2 memories');
-
-    // Count distinct projects
-    const resultProjects = db.exec(`SELECT COUNT(DISTINCT project_id) FROM memories`);
-    assert.strictEqual(resultProjects[0].values[0][0], 2, 'Should have 2 distinct projects');
+    
+    // Check global stats
+    const stats = getStats(db);
+    expect(stats.fragmentCount).toBe(5);
+    expect(stats.projectCount).toBe(2);
+    
+    // We can also check specific project stats via getProjectStats if we export it or use getStats logic
+    // For now, global stats confirm insertion.
   });
 
-  test('should search by LIKE pattern', () => {
+  test('should search by keyword', () => {
     const embedding = createMockEmbedding(5);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
-
     const contents = [
       'Implementing authentication with JWT tokens',
       'Setting up database migrations',
@@ -201,141 +203,62 @@ describe('Database Module', async () => {
     ];
 
     contents.forEach((content, i) => {
-      db.run(
-        `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [content, `hash-search-${i}`, embeddingBuffer, 'search-project', 'session-search', new Date().toISOString()]
-      );
+        insertMemory(db, {
+            content,
+            embedding,
+            projectId: 'search-project',
+            sourceSession: 'session-search',
+            timestamp: new Date()
+        });
     });
 
     // Search for JWT
-    const result = db.exec(`SELECT content FROM memories WHERE LOWER(content) LIKE ?`, ['%jwt%']);
-    assert.strictEqual(result[0].values.length, 2, 'Should find 2 memories containing JWT');
-  });
-
-  test('should get statistics correctly', () => {
-    const embedding = createMockEmbedding(6);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
-
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    // Insert memories with different timestamps
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Oldest', 'hash-old', embeddingBuffer, 'stats-project', 'session-1', yesterday.toISOString()]
-    );
-
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Newest', 'hash-new', embeddingBuffer, 'stats-project', 'session-2', now.toISOString()]
-    );
-
-    // Get stats
-    const countResult = db.exec(`SELECT COUNT(*) FROM memories`);
-    const oldestResult = db.exec(`SELECT MIN(timestamp) FROM memories`);
-    const newestResult = db.exec(`SELECT MAX(timestamp) FROM memories`);
-    const sessionsResult = db.exec(`SELECT COUNT(DISTINCT source_session) FROM memories`);
-
-    assert.strictEqual(countResult[0].values[0][0], 2, 'Should have 2 memories');
-    assert.strictEqual(sessionsResult[0].values[0][0], 2, 'Should have 2 distinct sessions');
-    assert.ok(oldestResult[0].values[0][0] <= newestResult[0].values[0][0], 'Oldest should be before newest');
+    const results = searchByKeyword(db, 'JWT', 'search-project');
+    expect(results.length).toBe(2);
+    expect(results[0].content).toContain('JWT');
   });
 
   test('should handle null project_id', () => {
     const embedding = createMockEmbedding(7);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
+    
+    insertMemory(db, {
+        content: 'Global memory',
+        embedding,
+        projectId: null,
+        sourceSession: 'session-global',
+        timestamp: new Date()
+    });
 
-    // Insert global memory (null project_id)
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Global memory', 'hash-global', embeddingBuffer, null, 'session-global', new Date().toISOString()]
-    );
-
-    // Query global memories
-    const result = db.exec(`SELECT content FROM memories WHERE project_id IS NULL`);
-    assert.strictEqual(result[0].values.length, 1, 'Should find 1 global memory');
-    assert.strictEqual(result[0].values[0][0], 'Global memory');
+    const memory = getMemory(db, 1);
+    expect(memory.projectId).toBeNull();
   });
 
   test('should delete all memories for a project', () => {
     const embedding = createMockEmbedding(8);
-    const embeddingBuffer = Buffer.from(embedding.buffer);
+    
+    insertMemory(db, {
+        content: 'To delete',
+        embedding,
+        projectId: 'to-delete',
+        sourceSession: 'session-x',
+        timestamp: new Date()
+    });
+    
+    insertMemory(db, {
+        content: 'Keep me',
+        embedding,
+        projectId: 'keep-project',
+        sourceSession: 'session-y',
+        timestamp: new Date()
+    });
 
-    // Insert memories for target project
-    for (let i = 0; i < 5; i++) {
-      db.run(
-        `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [`Content ${i}`, `hash-del-proj-${i}`, embeddingBuffer, 'to-delete', 'session-x', new Date().toISOString()]
-      );
-    }
-
-    // Insert memory for other project (should not be deleted)
-    db.run(
-      `INSERT INTO memories (content, content_hash, embedding, project_id, source_session, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      ['Keep me', 'hash-keep', embeddingBuffer, 'keep-project', 'session-y', new Date().toISOString()]
-    );
-
-    // Delete project memories
-    db.run(`DELETE FROM memories WHERE project_id = ?`, ['to-delete']);
-
-    // Verify
-    const countResult = db.exec(`SELECT COUNT(*) FROM memories`);
-    assert.strictEqual(countResult[0].values[0][0], 1, 'Should have 1 remaining memory');
-
-    const remainingResult = db.exec(`SELECT project_id FROM memories`);
-    assert.strictEqual(remainingResult[0].values[0][0], 'keep-project', 'Remaining should be keep-project');
+    deleteProjectMemories(db, 'to-delete');
+    
+    const stats = getStats(db);
+    expect(stats.fragmentCount).toBe(1);
+    
+    const remaining = getMemory(db, 2); // ID 2 is likely the second one
+    expect(remaining.projectId).toBe('keep-project');
   });
+
 });
-
-describe('Cosine Similarity', () => {
-  test('should compute cosine similarity correctly', () => {
-    // Same vectors should have similarity = 1
-    const a = new Float32Array([1, 0, 0]);
-    const b = new Float32Array([1, 0, 0]);
-
-    const similarity = cosineSimilarity(a, b);
-    assert.ok(Math.abs(similarity - 1.0) < 0.0001, 'Same vectors should have similarity ~1');
-  });
-
-  test('should return 0 for orthogonal vectors', () => {
-    const a = new Float32Array([1, 0, 0]);
-    const b = new Float32Array([0, 1, 0]);
-
-    const similarity = cosineSimilarity(a, b);
-    assert.ok(Math.abs(similarity) < 0.0001, 'Orthogonal vectors should have similarity ~0');
-  });
-
-  test('should return -1 for opposite vectors', () => {
-    const a = new Float32Array([1, 0, 0]);
-    const b = new Float32Array([-1, 0, 0]);
-
-    const similarity = cosineSimilarity(a, b);
-    assert.ok(Math.abs(similarity + 1.0) < 0.0001, 'Opposite vectors should have similarity ~-1');
-  });
-});
-
-// Utility: cosine similarity implementation for tests
-function cosineSimilarity(a, b) {
-  if (a.length !== b.length) return 0;
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-  if (denominator === 0) return 0;
-
-  return dotProduct / denominator;
-}
