@@ -213,6 +213,22 @@ export interface TurnInput {
 }
 
 // ============================================================================
+// Session Summary Types
+// ============================================================================
+
+export interface SessionSummaryInput {
+  projectId: string | null;
+  sessionId: string;
+  summary: string;
+  keyDecisions?: string[];
+  keyOutcomes?: string[];
+  blockers?: string[];
+  contextAtSave?: number;
+  fragmentsSaved?: number;
+  timestamp: Date;
+}
+
+// ============================================================================
 // CLI Command Types
 // ============================================================================
 

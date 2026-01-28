@@ -21,9 +21,27 @@
 | Re-explaining context every session | Hybrid search recalls relevant memories |
 | Cloud memory privacy concerns | 100% local — `~/.cortex/memory.db` |
 
+## Key Features
+
+- **Persistent Context:** Stores specific information permanently (decisions, preferences, facts).
+- **Hybrid Search:** Combines semantic (vector) search with keyword (FTS) matching.
+- **Auto-Archiving:** Automatically processes transcripts to extract key insights.
+- **Zero Configuration:** Works out of the box with reasonable defaults.
+- **Privacy First:** All data is stored locally in `~/.cortex/`. No data leaves your machine.
+
+## Performance & Architecture
+
+Cortex is built on **Bun**, utilizing native SQLite with Write-Ahead Logging (WAL) for maximum performance.
+
+- **2x Faster Search:** Native vector operations significantly outperform WASM-based solutions.
+- **Instant Saves:** WAL mode ensures O(1) persistence, eliminating the lag associated with rewriting large database files.
+- **Concurrency:** Non-blocking reads and writes allow for seamless background archiving.
+
+See the full [Benchmark Report](BENCHMARKS.md) for detailed comparisons.
+
 ## Requirements
 
-- **Node.js**: 18.0.0 or higher
+- **Runtime**: Bun v1.0.0 or higher
 - **Disk Space**: ~500MB (Includes 150MB embedding model cache + database growth)
 - **OS**: macOS or Linux (Windows supported via WSL2)
 
@@ -37,23 +55,6 @@ Inside a Claude Code instance:
 ```
 
 **Step 2: Install the plugin**
-
-<details>
-<summary><strong>⚠️ Linux users: Click here first</strong></summary>
-
-On Linux, `/tmp` is often a separate filesystem (tmpfs), which causes plugin installation to fail with:
-```
-EXDEV: cross-device link not permitted
-```
-
-**Fix**: Set TMPDIR before installing:
-```bash
-mkdir -p ~/.cache/tmp && TMPDIR=~/.cache/tmp claude
-```
-
-Then run the install command below in that session.
-
-</details>
 
 ```
 /plugin install cortex
@@ -138,8 +139,8 @@ The statusline is configured automatically by `/cortex-setup`. Restart Claude Co
               │                           │                           │
    ┌──────────▼──────────┐    ┌──────────▼──────────┐    ┌──────────▼──────────┐
    │     Database        │    │     Embeddings      │    │      Search         │
-   │   (sql.js/WASM)     │    │  (Nomic Embed v1.5) │    │  (Vector + FTS5)    │
-   │   + FTS5 + Backup   │    │     768 dims        │    │    + RRF Fusion     │
+   │  (Native SQLite)    │    │  (Nomic Embed v1.5) │    │  (Vector + FTS5)    │
+   │   + FTS5 + WAL      │    │     768 dims        │    │    + RRF Fusion     │
    └──────────┬──────────┘    └──────────┬──────────┘    └──────────┬──────────┘
               │                           │                           │
               └───────────────────────────┼───────────────────────────┘
@@ -149,21 +150,6 @@ The statusline is configured automatically by `/cortex-setup`. Restart Claude Co
                            │      (SQLite + Embeddings)           │
                            └──────────────────────────────────────┘
 ```
-
-### Module Overview
-
-| Module | Lines | Responsibility |
-|--------|-------|----------------|
-| `index.ts` | 836 | Command router, hooks, statusline |
-| `mcp-server.ts` | 850 | MCP protocol, 11 tools exposed |
-| `database.ts` | 1143 | SQLite, FTS5, backups, recovery |
-| `archive.ts` | 873 | Transcript parsing, chunking |
-| `embeddings.ts` | 337 | Nomic Embed v1.5, quantization |
-| `search.ts` | 308 | Hybrid search, RRF fusion |
-| `config.ts` | 563 | Zod validation, presets |
-| `analytics.ts` | 288 | Session tracking, insights |
-
-**Total: ~5,700 lines TypeScript**
 
 ## Search Algorithm
 
@@ -319,7 +305,7 @@ CREATE INDEX idx_memories_project_id ON memories(project_id);
 CREATE INDEX idx_memories_timestamp ON memories(timestamp);
 CREATE INDEX idx_memories_content_hash ON memories(content_hash);
 
--- Optional FTS5 (graceful fallback to LIKE if unavailable)
+-- FTS5 Virtual Table (Native)
 CREATE VIRTUAL TABLE memories_fts USING fts5(content);
 ```
 
@@ -327,8 +313,7 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content);
 
 - **Auto-backup**: Created on database open
 - **Rotation**: Keeps 5 most recent backups
-- **Recovery**: Tests each backup until one validates
-- **Atomic writes**: temp file + rename pattern
+- **Recovery**: Backups are for manual restore only; no automatic recovery is performed
 
 ## Data Storage
 
@@ -344,10 +329,10 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(content);
 ## Testing
 
 ```bash
-npm test
+bun test
 ```
 
-> **Note**: `npm test` runs with **synthetic/fake data** for speed and isolation.
+> **Note**: `bun test` runs with **synthetic/fake data** for speed and isolation.
 
 ### Running with Real Data (E2E)
 
@@ -397,20 +382,19 @@ To test against a real production transcript (35MB+):
 
 ```bash
 npm install            # Install dependencies
-npm run build          # Build index.js + mcp-server.js + copy WASM
+npm run build          # Build index.js + mcp-server.js (uses bun build)
 npm run build:index    # Build main entry only
 npm run build:mcp      # Build MCP server only
 npm run typecheck      # TypeScript strict check
-npm test               # Run test suite
+bun test               # Run test suite
 ```
 
 ### Build Output
 
 ```
 dist/
-├── index.js           # 302KB - Main entry point
-├── mcp-server.js      # 277KB - MCP server
-└── sql-wasm.wasm      # 660KB - SQLite WebAssembly
+├── index.js           # 1.67MB - Main entry point (Bundled)
+├── mcp-server.js      # 1.65MB - MCP server (Bundled)
 ```
 
 ### Testing Commands Manually
@@ -430,11 +414,11 @@ echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | node dist/mcp-server.js
 
 | Operation | Typical Latency |
 |-----------|-----------------|
-| Embedding generation | ~100ms |
-| Vector search (1000 memories) | ~50ms |
-| FTS5 keyword search | ~10ms |
-| Hybrid search (combined) | ~100ms |
-| Database insert | ~5ms + embedding |
+| Embedding generation | ~30ms |
+| Vector search (1000 memories) | ~2ms |
+| FTS5 keyword search | ~0.5ms |
+| Hybrid search (combined) | ~5ms |
+| Database insert (WAL) | < 1ms |
 
 **Memory footprint**: ~50MB base (includes Nomic Embed model)
 
