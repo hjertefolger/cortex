@@ -3,7 +3,7 @@
  * Combines vector similarity and keyword search with recency decay
  */
 
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type { Database } from 'bun:sqlite';
 import { searchByVector, searchByKeyword } from './database.js';
 import { embedQuery } from './embeddings.js';
 import type { SearchResult, SearchOptions } from './types.js';
@@ -30,7 +30,7 @@ const RRF_K = 60;
  * Perform hybrid search combining vector similarity and keyword matching
  */
 export async function hybridSearch(
-  db: SqlJsDatabase,
+  db: Database,
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {
@@ -75,7 +75,7 @@ export async function hybridSearch(
  * Vector-only search (useful for semantic similarity)
  */
 export async function vectorSearch(
-  db: SqlJsDatabase,
+  db: Database,
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {
@@ -110,7 +110,7 @@ export async function vectorSearch(
  * Keyword-only search (useful for exact matches)
  */
 export async function keywordSearch(
-  db: SqlJsDatabase,
+  db: Database,
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {

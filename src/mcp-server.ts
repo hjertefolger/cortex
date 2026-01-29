@@ -4,14 +4,14 @@
  */
 
 import * as readline from 'readline';
-import { initDb, getStats, getProjectStats, getMemory, deleteMemory, storeManualMemory, saveDb, searchByVector, searchByKeyword, updateMemory, updateMemoryProjectId, renameProject, listProjects } from './database.js';
+import { initDb, getStats, getProjectStats, getMemory, deleteMemory, storeManualMemory, saveDb, searchByVector, searchByKeyword, updateMemory, updateMemoryProjectId, renameProject, listProjects, deleteProjectMemories } from './database.js';
 import { loadConfig, getDataDir, getCurrentSession, getMostRecentSession } from './config.js';
 import { hybridSearch } from './search.js';
 import { archiveSession } from './archive.js';
 import { embedQuery } from './embeddings.js';
 import { getProjectId } from './stdin.js';
 import { getAnalytics, getAnalyticsSummary, recordRemember, recordRecall } from './analytics.js';
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type { Database } from 'bun:sqlite';
 
 // ============================================================================
 // MCP Protocol Types
@@ -272,7 +272,7 @@ const TOOLS: Tool[] = [
 // ============================================================================
 
 async function handleRecall(
-  db: SqlJsDatabase,
+  db: Database,
   params: { query: string; limit?: number; includeAllProjects?: boolean; projectId?: string }
 ): Promise<unknown> {
   const { query, limit = 5, includeAllProjects = false, projectId } = params;
@@ -302,7 +302,7 @@ async function handleRecall(
 }
 
 async function handleRemember(
-  db: SqlJsDatabase,
+  db: Database,
   params: { content: string; context?: string; projectId?: string }
 ): Promise<unknown> {
   const { content, context, projectId } = params;
@@ -345,7 +345,7 @@ async function handleRemember(
 }
 
 async function handleSave(
-  db: SqlJsDatabase,
+  db: Database,
   params: { transcriptPath?: string; projectId?: string; global?: boolean }
 ): Promise<unknown> {
   let { transcriptPath, projectId } = params;
@@ -394,7 +394,7 @@ async function handleSave(
 }
 
 async function handleStats(
-  db: SqlJsDatabase,
+  db: Database,
   params: { projectId?: string }
 ): Promise<unknown> {
   const stats = getStats(db);
@@ -425,7 +425,7 @@ async function handleStats(
 }
 
 async function handleRestore(
-  db: SqlJsDatabase,
+  db: Database,
   params: { projectId?: string; messageCount?: number }
 ): Promise<unknown> {
   const { projectId, messageCount = 5 } = params;
@@ -464,7 +464,7 @@ async function handleRestore(
 }
 
 async function handleDelete(
-  db: SqlJsDatabase,
+  db: Database,
   params: { memoryId: number; confirm?: boolean }
 ): Promise<unknown> {
   const { memoryId, confirm = false } = params;
@@ -506,7 +506,7 @@ async function handleDelete(
 }
 
 async function handleUpdate(
-  db: SqlJsDatabase,
+  db: Database,
   params: { memoryId: number; content?: string; projectId?: string }
 ): Promise<unknown> {
   const { memoryId, content, projectId } = params;
@@ -562,7 +562,7 @@ async function handleUpdate(
 }
 
 async function handleRenameProject(
-  db: SqlJsDatabase,
+  db: Database,
   params: { oldProjectId: string; newProjectId: string }
 ): Promise<unknown> {
   const { oldProjectId, newProjectId } = params;
@@ -603,7 +603,7 @@ async function handleRenameProject(
 }
 
 async function handleForgetProject(
-  db: SqlJsDatabase,
+  db: Database,
   params: { projectId: string; confirm?: boolean }
 ): Promise<unknown> {
   const { projectId, confirm = false } = params;
@@ -629,9 +629,8 @@ async function handleForgetProject(
     };
   }
 
-  // Import the sql.js database to run delete
-  const result = db.exec(`DELETE FROM memories WHERE project_id = ?`, [projectId]);
-  const deletedCount = db.getRowsModified();
+  // Perform deletion using helper
+  const deletedCount = deleteProjectMemories(db, projectId);
   saveDb(db);
 
   return {
@@ -715,7 +714,7 @@ function generateRecommendations(summary: { averageContextAtSave: number; sessio
 // ============================================================================
 
 class MCPServer {
-  private db: SqlJsDatabase | null = null;
+  private db: Database | null = null;
 
   async initialize(): Promise<void> {
     this.db = await initDb();
