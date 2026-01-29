@@ -489,6 +489,7 @@ ls -la ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5/
 Thanks to everyone who has contributed to Cortex!
 
 - [@mikelane](https://github.com/mikelane) — Statusline chaining ([#1](https://github.com/hjertefolger/cortex/pull/1))
+- [@djayatillake](https://github.com/djayatillake) — Setup command fix ([#4](https://github.com/hjertefolger/cortex/pull/4))
 
 ## License
 
