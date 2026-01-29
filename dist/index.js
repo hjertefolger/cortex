@@ -8948,7 +8948,7 @@ async function handleSessionStart() {
   const config = loadConfig();
   if (!config.setup.completed) {
     debugLog("handleSessionStart", "Setup not completed, showing first-run message");
-    console.log(`${ANSI.brick}\u03A8${ANSI.reset} ${ANSI.yellow}First run detected. Run ${ANSI.cyan}/cortex:setup${ANSI.reset} to initialize.`);
+    console.log(`${ANSI.brick}\u03A8${ANSI.reset} ${ANSI.yellow}First run detected. Run ${ANSI.cyan}/cortex-setup${ANSI.reset} to initialize.`);
     return;
   }
   resetAutoSaveState();
