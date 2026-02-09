@@ -1,6 +1,6 @@
 {
   "name": "cortex",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Persistent local memory for Claude Code. Longer sessions, cross-session recall, zero cloud.",
   "type": "module",
   "main": "dist/index.js",

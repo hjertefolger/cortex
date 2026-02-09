@@ -768,7 +768,7 @@ class MCPServer {
         },
         serverInfo: {
           name: 'cortex-memory',
-          version: '2.0.3',
+          version: '2.1.3',
         },
       },
     };
@@ -882,13 +882,21 @@ async function main() {
     if (!line.trim()) return;
 
     try {
-      const request = JSON.parse(line) as MCPRequest;
+      const message = JSON.parse(line);
+
+      // Notifications have no 'id' field and must not receive a response
+      // Note: id: null is a valid request ID per JSON-RPC 2.0, so we check field presence
+      if (!('id' in message)) {
+        return;
+      }
+
+      const request = message as MCPRequest;
       const response = await server.handleRequest(request);
       console.log(JSON.stringify(response));
     } catch (error) {
       const errorResponse: MCPResponse = {
         jsonrpc: '2.0',
-        id: 0,
+        id: null,
         error: {
           code: -32700,
           message: 'Parse error',
