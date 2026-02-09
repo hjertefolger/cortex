@@ -490,6 +490,7 @@ Thanks to everyone who has contributed to Cortex!
 
 - [@mikelane](https://github.com/mikelane) — Statusline chaining ([#1](https://github.com/hjertefolger/cortex/pull/1))
 - [@djayatillake](https://github.com/djayatillake) — Setup command fix ([#4](https://github.com/hjertefolger/cortex/pull/4))
+- [@tkemperman](https://github.com/tkemperman) — MCP notification fix ([#7](https://github.com/hjertefolger/cortex/pull/7))
 
 ## License
 
