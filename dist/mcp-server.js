@@ -8660,7 +8660,7 @@ var MCPServer = class {
         },
         serverInfo: {
           name: "cortex-memory",
-          version: "2.0.3"
+          version: "2.1.3"
         }
       }
     };
@@ -8749,7 +8749,7 @@ async function main() {
       return;
     try {
       const message = JSON.parse(line);
-      if (message.id === void 0 || message.id === null) {
+      if (!("id" in message)) {
         return;
       }
       const request = message;
@@ -8758,7 +8758,7 @@ async function main() {
     } catch (error) {
       const errorResponse = {
         jsonrpc: "2.0",
-        id: 0,
+        id: null,
         error: {
           code: -32700,
           message: "Parse error",
